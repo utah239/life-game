@@ -77,25 +77,43 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PR_URL: ${{ github.event.pull_request.html_url }}
       EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+      EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+      EXPECTED_REPOSITORY: ${{ github.repository }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
       - name: Merge the exact reviewed head
         shell: bash
         run: |
           set -euo pipefail
           current_head="$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid)"
-          merge_state="$(gh pr view "$PR_URL" --json mergeStateStatus --jq .mergeStateStatus)"
+          current_base="$(gh pr view "$PR_URL" --json baseRefOid --jq .baseRefOid)"
           if [[ "$current_head" != "$EXPECTED_HEAD" ]]; then
             echo "PR head changed after this workflow started; a newer run will decide."
             exit 0
           fi
-          if [[ "$merge_state" == "BEHIND" ]]; then
+          if [[ "$current_base" != "$EXPECTED_BASE" ]]; then
             gh pr update-branch "$PR_URL"
             echo "Base branch was newer; updated the PR and left merge to the next run."
             exit 0
           fi
-          if [[ "$merge_state" != "CLEAN" ]]; then
-            echo "PR is not safely mergeable: $merge_state"
+          if [[ "$(gh pr view "$PR_URL" --json state --jq .state)" != "OPEN" ]] ||
+             [[ "$(gh pr view "$PR_URL" --json isDraft --jq .isDraft)" != "false" ]]; then
+            echo "PR is closed or draft; no merge attempted."
+            exit 0
+          fi
+          if [[ "$(gh pr view "$PR_URL" --json baseRefName --jq .baseRefName)" != "$DEFAULT_BRANCH" ]] ||
+             [[ "$(gh pr view "$PR_URL" --json headRepository --jq .headRepository.nameWithOwner)" != "$EXPECTED_REPOSITORY" ]]; then
+            echo "PR repository or base branch changed; no merge attempted."
+            exit 0
+          fi
+          if [[ "$(gh pr view "$PR_URL" --json labels --jq '[.labels[].name] | any(. == "manual-merge" or . == "do-not-merge")')" == "true" ]]; then
+            echo "An automatic-merge stop label is present."
+            exit 0
+          fi
+          if [[ "$(gh pr view "$PR_URL" --json mergeable --jq .mergeable)" != "MERGEABLE" ]]; then
+            echo "PR has a merge conflict or mergeability is unknown."
             exit 1
           fi
+          gh pr checks "$PR_URL" --required
           gh pr merge "$PR_URL" --squash --delete-branch \
             --match-head-commit "$EXPECTED_HEAD"

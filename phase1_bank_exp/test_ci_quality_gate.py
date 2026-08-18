@@ -56,8 +56,10 @@ class AutomatedReviewContractTest(unittest.TestCase):
                 "github.event.pull_request.base.ref == github.event.repository.default_branch",
                 "github.event.pull_request.head.repo.full_name == github.repository",
                 "manual-merge", "do-not-merge", "--match-head-commit",
-                "needs: [automated-review, tests]"):
+                "needs: [automated-review, tests]", "EXPECTED_BASE",
+                'gh pr checks "$PR_URL" --required'):
             self.assertIn(token, workflow)
+        self.assertNotIn("--json mergeStateStatus", workflow)
 
 
 if __name__ == "__main__":
