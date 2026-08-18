@@ -115,5 +115,8 @@ jobs:
             exit 1
           fi
           gh pr checks "$PR_URL" --required
-          gh pr merge "$PR_URL" --squash --delete-branch \
+          # A stacked PR may use this head branch as its base. Deleting the
+          # branch closes that downstream PR on GitHub, so branch cleanup is
+          # intentionally left to a later, stack-aware maintenance step.
+          gh pr merge "$PR_URL" --squash \
             --match-head-commit "$EXPECTED_HEAD"
