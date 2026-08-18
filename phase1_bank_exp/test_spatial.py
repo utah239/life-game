@@ -6,7 +6,7 @@ import random
 import unittest
 
 from institutions import (
-    activity_communities, residents, settlement_network, spatial,
+    activity_communities, population, residents, settlement_network, spatial,
 )
 
 
@@ -65,6 +65,55 @@ class SpatialStateRulesTest(unittest.TestCase):
         self.assertNotEqual(
             {row["account_id"] for row in original["sites"].values()},
             {row["account_id"] for row in changed["sites"].values()})
+
+    def test_bootstrap_sample_density_does_not_bridge_activity_nuclei(self):
+        """匿名人口の観察標本が多くても初期活動核を連結鎖にしない。"""
+        settlements = {"mega": population.initial_settlement(
+            "mega", population=1_000_000,
+            reproductive_population=350_000)}
+        registry = residents.initial_resident_registry(
+            settlements, world_seed=17)
+        state = spatial.initial_spatial_state(registry, turn=1)
+        roots = {
+            site_id: site for site_id, site in state["sites"].items()
+            if site_id == site["root_site_id"]}
+
+        self.assertEqual(len(roots), 8)
+        self.assertEqual(len(state["clusters"]), len(roots))
+        for cluster in state["clusters"].values():
+            cluster_sites = [
+                state["sites"][site_id]
+                for site_id in cluster["site_ids"]]
+            root_ids = {site["root_site_id"] for site in cluster_sites}
+            self.assertEqual(len(root_ids), 1)
+            root_id = next(iter(root_ids))
+            root = roots[root_id]
+            for site in cluster_sites:
+                if site["id"] == root_id:
+                    self.assertIsNone(site["parent_site_id"])
+                    continue
+                self.assertEqual(site["parent_site_id"], root_id)
+                self.assertLessEqual(
+                    ((site["x"] - root["x"]) ** 2
+                     + (site["y"] - root["y"]) ** 2) ** 0.5,
+                    spatial.SITE_ATTACH_DISTANCE_RANGE[1] + 1e-9)
+
+    def test_bootstrap_cluster_count_grows_to_cap_without_collapsing(self):
+        cluster_counts = []
+        for population_count in (250, 1_000, 10_000, 1_000_000):
+            settlements = {"mega": population.initial_settlement(
+                "mega", population=population_count,
+                reproductive_population=round(population_count * 0.35))}
+            registry = residents.initial_resident_registry(
+                settlements, world_seed=17)
+            state = spatial.initial_spatial_state(registry, turn=1)
+            root_count = len({
+                site["root_site_id"]
+                for site in state["sites"].values()})
+            self.assertEqual(len(state["clusters"]), root_count)
+            cluster_counts.append(len(state["clusters"]))
+
+        self.assertEqual(cluster_counts, [3, 6, 8, 8])
 
     def test_birth_death_and_migration_are_synchronized_without_rng(self):
         state = spatial.initial_spatial_state(self.registry, turn=1)

@@ -151,21 +151,18 @@ def _bootstrap_sites(registry: dict, turn: int) -> dict:
                 household, turn, x, y, parent_site_id=None,
                 root_site_id=root_site_id)
         else:
-            root_site_id = roots[_stable_int(household["id"], "nucleus") % len(roots)]
-            candidates = [
-                row for row in sites.values()
-                if row["root_site_id"] == root_site_id
-                and row["livelihood"] == household.get("livelihood")]
-            if not candidates:
-                candidates = [
-                    row for row in sites.values()
-                    if row["root_site_id"] == root_site_id]
-            parent = candidates[
-                _stable_int(household["id"], "parent") % len(candidates)]
+            root_site_id = roots[
+                _stable_int(household["id"], "nucleus") % len(roots)]
+            root = sites[root_site_id]
+            # 初期の名前付き世帯は人口全体の観察標本であり、標本点を親から
+            # 親へ再帰的に延ばすと、標本数だけで活動域が広がって別の核まで
+            # 単連結してしまう。初期配置だけは各活動核へ直接付け、標本密度を
+            # 地理的な拡大へ変換しない。誕生後の新世帯・移住・開拓による実際
+            # の空間発展は_new_site/_start_pioneeringが従来どおり担う。
             x, y = _offset(
-                (parent["x"], parent["y"]), f"{household['id']}:site")
+                (root["x"], root["y"]), f"{household['id']}:site")
             site = _site_record(
-                household, turn, x, y, parent_site_id=parent["id"],
+                household, turn, x, y, parent_site_id=root_site_id,
                 root_site_id=root_site_id)
         sites[site_id] = site
     return sites
