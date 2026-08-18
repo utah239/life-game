@@ -606,7 +606,7 @@
       <div class="npc-table-wrap">
         <table class="npc-table">
           <thead><tr>
-            <th>世帯</th><th>活動集落</th><th>生業</th><th>累積活動 食/薬/住/具</th><th class="num">生存者</th><th>最近の担い手</th><th>構成員</th>
+            <th>世帯</th><th>活動集落</th><th>生業</th><th>累積活動 食/薬/住/具</th><th>現在保有 食/薬/住/具</th><th>充足率 %</th><th class="num">生存者</th><th>最近の担い手</th><th>構成員</th>
           </tr></thead>
           <tbody id="household-table-body"></tbody>
         </table>
@@ -4358,6 +4358,14 @@ function renderVitals() {
   const worldDemandByGood = [
     ['食', 'food'], ['薬', 'medicine'], ['住', 'shelter'], ['具', 'tools'],
   ].map(([label, key]) => `${label}${fmtValue(worldDemand[key] ?? 0)}`).join(' · ');
+  const focusHouseholdGoods = observed?.focus_household_goods || {};
+  const focusHouseholdCoverage = observed?.focus_household_goods_coverage_by_good || {};
+  const focusHouseholdGoodsText = [
+    ['食', 'food'], ['薬', 'medicine'], ['住', 'shelter'], ['具', 'tools'],
+  ].map(([label, key]) => `${label}${fmtValue(focusHouseholdGoods[key] ?? 0)}`).join(' · ');
+  const focusHouseholdCoverageText = [
+    ['食', 'food'], ['薬', 'medicine'], ['住', 'shelter'], ['具', 'tools'],
+  ].map(([label, key]) => `${label}${fmtValue(focusHouseholdCoverage[key] ?? 0)}%`).join(' · ');
 
   const el = document.getElementById('vitals');
   el.innerHTML = `
@@ -4383,6 +4391,8 @@ function renderVitals() {
       <div class="vital"><span class="label">組織</span><span class="value">${observed?.organization_count ?? m.organization_count ?? 0}</span></div>
       <div class="vital"><span class="label">焦点人物</span><span class="value">${escapeHtml(observed?.focus_resident_name || '—')}</span></div>
       <div class="vital"><span class="label">世帯</span><span class="value">${escapeHtml(observed?.focus_household_name || '—')}</span></div>
+      <div class="vital"><span class="label">世帯の保有財</span><span class="value">${focusHouseholdGoodsText}</span></div>
+      <div class="vital"><span class="label">世帯の財充足</span><span class="value">${focusHouseholdCoverageText}</span></div>
       <div class="vital"><span class="label">焦点集落</span><span class="value">${escapeHtml(DATA.settlement_states?.[observed?.settlement_id || m.focus_settlement_id]?.name || observed?.settlement_id || m.focus_settlement_id || 'home')}</span></div>
       <div class="vital"><span class="label">活動のまとまり</span><span class="value">${physicalClusterCount}現存 / ${m.activity_cluster_lineage_count ?? 0}系譜</span></div>
       <div class="vital"><span class="label">共同体会計</span><span class="value">${accountingClusterCount}共同体${provisionalClusterCount ? ` / 前集落${provisionalClusterCount}` : ''}</span></div>
@@ -4456,6 +4466,24 @@ function observationEvents(row) {
     }
     if (event.kind === 'household_split') return `${escapeHtml(event.name)}が移住によって新しい世帯に分かれた`;
     if (event.kind === 'household_closed') return `${escapeHtml(event.name)}の生存者がいなくなった`;
+    if (event.kind === 'household_goods_migrated' || event.kind === 'anonymous_goods_migrated') {
+      const from = DATA.settlement_states?.[event.from_settlement]?.name || event.from_settlement;
+      const to = DATA.settlement_states?.[event.to_settlement]?.name || event.to_settlement;
+      const goods = event.goods || {};
+      const total = Object.values(goods).reduce((sum, value) => sum + Number(value || 0), 0);
+      return `${escapeHtml(from)}から${escapeHtml(to)}へ移住者の携行財 ${fmtValue(total)}が移った`;
+    }
+    if (event.kind === 'household_goods_acquired') {
+      const total = Object.values(event.goods || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+      return `${escapeHtml(event.household_id || '世帯')}が${escapeHtml(event.reason || '活動')}で財 ${fmtValue(total)}を得た`;
+    }
+    if (event.kind === 'household_goods_inherited') {
+      const total = Object.values(event.goods || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+      return event.reason === 'inherited'
+        ? `${escapeHtml(event.household_id || '世帯')}が財 ${fmtValue(total)}を受け継いだ`
+        : `閉鎖世帯の財 ${fmtValue(total)}が共同体へ戻った`;
+    }
+    if (event.kind === 'household_goods_released') return `活動を終えた世帯の保有財が共同体へ戻った`;
     if (event.kind === 'character_died') return `${event.resident_name ? escapeHtml(event.resident_name) : `第${event.generation || '?'}世代の人物`}が死亡した（集落人口 ${event.population_after ?? '—'}）`;
     if (event.kind === 'successor_selected') {
       const destination = DATA.settlement_states?.[event.settlement_id]?.name || event.settlement_id;
@@ -4937,6 +4965,8 @@ function renderResidentHouseholds() {
     const unclassified = Number(row.unclassified_activity_count || 0);
     return classified + (unclassified ? `（旧分類外${unclassified}）` : '');
   };
+  const goodsText = values => ['food', 'medicine', 'shelter', 'tools']
+    .map(key => fmtValue(values?.[key] ?? 0)).join(' / ');
   const focusId = observed?.focus_resident_id || DATA.meta.focus_resident_id;
   const originWords = {
     initial: '初期住民', legacy_snapshot: '旧世界引継ぎ', birth: '出生',
@@ -5008,12 +5038,14 @@ function renderResidentHouseholds() {
       <td>${escapeHtml(row.name)}</td><td>${escapeHtml(place)}</td>
       <td>${escapeHtml(LIVELIHOOD_JA[row.livelihood] || row.livelihood || '—')}</td>
       <td class="num">${activityCountText(row)}</td>
+      <td class="num">${goodsText(row.goods_holdings)}</td>
+      <td class="num">${goodsText(row.goods_coverage_by_good)}</td>
       <td class="num">${row.living_members}</td>
       <td>${row.last_activity_turn !== null && row.last_activity_turn <= observedTurn
         ? `${escapeHtml(lastActorNames.get(row.last_actor_id) || '—')} / T${row.last_activity_turn}` : '—'}</td>
       <td>${row.member_names.length ? row.member_names.map(escapeHtml).join('・') : '—'}</td>
     </tr>`;
-  }).join('') : '<tr><td colspan="7">世帯台帳の記録なし</td></tr>';
+  }).join('') : '<tr><td colspan="9">世帯台帳の記録なし</td></tr>';
   document.getElementById('resident-count-note').textContent =
     `${visibleResidentCount.toLocaleString()}人記録` +
     (visibleResidentCount > visibleResidents.length
