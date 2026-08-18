@@ -4,7 +4,7 @@ import unittest
 
 import game
 from dashboard.build_dashboard import build_dashboard_data, build_observer_events
-from institutions import household_goods
+from institutions import household_goods, organizations
 
 
 GOODS = household_goods.HOUSEHOLD_GOODS
@@ -301,6 +301,57 @@ class HouseholdGoodsAccountingTest(unittest.TestCase):
             result["settlements"]["b"]["local_economy"]["food"], 30.0)
         self.assertEqual(
             result["settlements"]["a"]["local_economy"]["shelter"], 100.0)
+
+    def test_migration_reconciles_organization_claims_before_household_claims(self):
+        self.settlements = settlements(a=2, b=1)
+        self.settlements["b"]["local_economy"].update(
+            {good: 20.0 for good in GOODS})
+        self.registry = registry(
+            [resident("r1", "h1", "b"), resident("r2", "h1", "b")],
+            [("h1", "青木", "b", True)])
+        self.needs = needs({
+            "a": {"households": {}},
+            "b": {"households": {"h1": 2}},
+        })
+        self.organizations = organizations.initial_organization_state()
+        self.organizations["organizations"]["org"] = {
+            "id": "org", "active": True,
+            "home_activity_cluster_id": "a", "site_ids": [],
+            "kind": "company",
+            "asset_claims": {good: 100.0 for good in GOODS},
+            "asset_claim_total": 400.0,
+        }
+        state = household_goods.initial_household_goods_state()
+        state["households"]["h1"] = household_goods._account_record(
+            "h1", "a")
+        state["households"]["h1"]["holdings"].update({
+            "food": 10.0, "medicine": 4.0,
+            "shelter": 20.0, "tools": 6.0,
+        })
+        event = {
+            "turn": 2, "kind": "residents_migrated",
+            "from_settlement": "a", "to_settlement": "b", "migrants": 2,
+            "residents": [
+                {"resident_id": "r1", "household_id": "h1"},
+                {"resident_id": "r2", "household_id": "h1"},
+            ],
+        }
+
+        result = household_goods.plan_household_goods_lifecycle(
+            state, self.settlements, self.registry, self.needs,
+            self.organizations, [event], 2,
+            reconcile_organization_state_fn=(
+                organizations.reconcile_organization_state_asset_claims))
+
+        claims = result["organization_state"]["organizations"]["org"][
+            "asset_claims"]
+        self.assertEqual(claims["food"], 90.0)
+        self.assertEqual(claims["medicine"], 96.0)
+        self.assertEqual(claims["tools"], 94.0)
+        self.assertEqual(claims["shelter"], 100.0)
+        self.assertTrue(household_goods.verify_household_goods_state(
+            result["state"], result["settlements"], self.registry,
+            self.needs, result["organization_state"]))
 
     def test_partial_household_split_divides_portable_holdings(self):
         self.settlements = settlements(a=1, b=1)
