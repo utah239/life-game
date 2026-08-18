@@ -1,0 +1,101 @@
+name: PR Quality Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+
+concurrency:
+  group: pr-quality-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: "1"
+
+jobs:
+  automated-review:
+    name: Automated review
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Check patch whitespace
+        run: git diff --check "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
+      - name: Review repository structure
+        run: python tools/automated_review.py
+      - name: Parse dashboard JavaScript
+        run: python tools/check_dashboard_javascript.py
+      - name: Check CLI
+        working-directory: phase1_bank_exp
+        run: python game.py --help
+      - name: Check regime-aware policy baseline
+        run: python tools/check_policy_baseline.py
+
+  tests:
+    name: Full test suite (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run all tests
+        working-directory: phase1_bank_exp
+        run: python -m unittest discover -v
+
+  automerge:
+    name: Auto-merge verified PR
+    needs: [automated-review, tests]
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !contains(github.event.pull_request.labels.*.name, 'manual-merge') &&
+      !contains(github.event.pull_request.labels.*.name, 'do-not-merge')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Merge the exact reviewed head
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_head="$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid)"
+          merge_state="$(gh pr view "$PR_URL" --json mergeStateStatus --jq .mergeStateStatus)"
+          if [[ "$current_head" != "$EXPECTED_HEAD" ]]; then
+            echo "PR head changed after this workflow started; a newer run will decide."
+            exit 0
+          fi
+          if [[ "$merge_state" == "BEHIND" ]]; then
+            gh pr update-branch "$PR_URL"
+            echo "Base branch was newer; updated the PR and left merge to the next run."
+            exit 0
+          fi
+          if [[ "$merge_state" != "CLEAN" ]]; then
+            echo "PR is not safely mergeable: $merge_state"
+            exit 1
+          fi
+          gh pr merge "$PR_URL" --squash --delete-branch \
+            --match-head-commit "$EXPECTED_HEAD"
