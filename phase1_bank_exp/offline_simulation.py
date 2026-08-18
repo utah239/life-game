@@ -90,6 +90,7 @@ from institutions.household_agency import (
     upgrade_household_agency_state,
     verify_household_agency_state,
 )
+from institutions.household_mobility import plan_household_migration
 from institutions.activity_communities import (
     ACTIVITY_COMMUNITY_ACCOUNTING_VERSION,
     build_activity_community_ledger,
@@ -1955,7 +1956,12 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             migration = plan_migration(settlements, turn)
             settlements = migration["settlements"]
             migration_total += migration["migrants"]
-            for migration_event in migration["events"]:
+            migration_events = [
+                plan_household_migration(
+                    migration_event, household_agency_state,
+                    resident_registry, turn)
+                for migration_event in migration["events"]]
+            for migration_event in migration_events:
                 resident_migration = apply_resident_migration(
                     resident_registry, migration_event, turn,
                     protected_resident_ids=(focus_resident_id,))
@@ -1966,7 +1972,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                     trace["resident_events"].extend(
                         resident_migration["events"])
             if trace is not None:
-                trace["population_events"].extend(migration["events"])
+                trace["population_events"].extend(migration_events)
             if not registry_matches_settlements(
                     resident_registry, settlements):
                 raise RuntimeError(

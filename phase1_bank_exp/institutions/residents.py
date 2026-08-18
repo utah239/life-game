@@ -18,7 +18,8 @@ import copy
 import hashlib
 
 
-RESIDENT_REGISTRY_VERSION = 4
+RESIDENT_REGISTRY_VERSION = 5
+ACTIVITY_BREAKDOWN_VERSION = 4
 NAMED_RESIDENT_LIMIT = 4096
 MONTHS_PER_YEAR = 12
 FOCUS_ENTRY_AGE_YEARS = 13
@@ -194,6 +195,10 @@ def _next_household(registry: dict, settlement_id: str, turn: int, *,
         "last_activity_turn": None,
         "last_activity": None,
         "last_actor_id": None,
+        "previous_settlement_id": None,
+        "last_migration_turn": None,
+        "last_migration_reason": None,
+        "migration_count": 0,
     }
     registry["households"][household_id] = household
     return household
@@ -344,7 +349,7 @@ def initial_resident_registry(settlements: dict, world_seed: int,
 
 
 def upgrade_resident_registry(registry: dict) -> dict:
-    """version 1の台帳へ生業・行動欄を追加する。
+    """旧台帳へ生業・活動内訳・世帯移住履歴を追加する。
 
     住民ID・名前・世帯・集落・累計値は変更しない。既存の水槽は同じ人々の
     まま次の月から生業記録を開始できる。
@@ -357,7 +362,9 @@ def upgrade_resident_registry(registry: dict) -> dict:
     if version > RESIDENT_REGISTRY_VERSION:
         raise ValueError("resident registry version is newer than this runtime")
     after = copy.deepcopy(registry)
-    legacy_activity_breakdown = version < RESIDENT_REGISTRY_VERSION
+    # 財別活動内訳はschema 4で導入済み。現在versionとの比較にすると、今後の
+    # 無関係なschema追加でも既存内訳をlegacy扱いして検証を弱めてしまう。
+    legacy_activity_breakdown = version < ACTIVITY_BREAKDOWN_VERSION
     world_seed = int(after.get("world_seed", 0))
     for household_id, household in after.get("households", {}).items():
         household.setdefault(
@@ -368,6 +375,10 @@ def upgrade_resident_registry(registry: dict) -> dict:
         household.setdefault("last_activity_turn", None)
         household.setdefault("last_activity", None)
         household.setdefault("last_actor_id", None)
+        household.setdefault("previous_settlement_id", None)
+        household.setdefault("last_migration_turn", None)
+        household.setdefault("last_migration_reason", None)
+        household.setdefault("migration_count", 0)
     for resident in after.get("residents", {}).values():
         resident.setdefault("activity_count", 0)
         _upgrade_activity_account(
@@ -765,20 +776,57 @@ def apply_migration(registry: dict, migration_event: dict, turn: int, *,
         migrants, int(migration_event.get("reproductive_migrants", 0))))
     if migrants < 0:
         raise ValueError("migrants must be non-negative")
+    protected = set(protected_resident_ids)
+    candidates = living_residents(after, source_id)
+    lo, hi = REPRODUCTIVE_AGE_RANGE
+    preferred_ids = tuple(dict.fromkeys(
+        str(household_id) for household_id in migration_event.get(
+            "preferred_household_ids", ())))
+    members_by_household = {}
+    for resident in candidates:
+        members_by_household.setdefault(
+            resident["household_id"], []).append(resident)
+    selected = []
+    selected_preferred_households = []
+    preferred_reproductive = 0
+    preferred_non_reproductive = 0
+    for household_id in preferred_ids:
+        members = members_by_household.get(household_id, [])
+        if not members or any(
+                resident["id"] in protected for resident in members):
+            continue
+        reproductive_members = sum(
+            lo <= resident_age_years(resident, turn) <= hi
+            for resident in members)
+        non_reproductive_members = len(members) - reproductive_members
+        if (len(selected) + len(members) > migrants
+                or preferred_reproductive + reproductive_members
+                > reproductive
+                or preferred_non_reproductive + non_reproductive_members
+                > migrants - reproductive):
+            continue
+        selected.extend(members)
+        selected_preferred_households.append(household_id)
+        preferred_reproductive += reproductive_members
+        preferred_non_reproductive += non_reproductive_members
+
     anonymous_migrants = (min(
-        migrants, anonymous_population_count(after, source_id))
+        migrants - len(selected),
+        anonymous_population_count(after, source_id))
         if after.get("cohort_mode", False) else 0)
     if anonymous_migrants:
         _change_anonymous_population(
             after, source_id, -anonymous_migrants)
         _change_anonymous_population(
             after, destination_id, anonymous_migrants)
-    named_migrants = migrants - anonymous_migrants
+    named_migrants = migrants - anonymous_migrants - len(selected)
     named_reproductive = max(
-        0, min(named_migrants, reproductive - anonymous_migrants))
-    protected = set(protected_resident_ids)
-    candidates = living_residents(after, source_id)
-    lo, hi = REPRODUCTIVE_AGE_RANGE
+        0, min(named_migrants,
+               reproductive - preferred_reproductive - anonymous_migrants))
+    selected_ids = {resident["id"] for resident in selected}
+    candidates = [
+        resident for resident in candidates
+        if resident["id"] not in selected_ids]
     reproductive_candidates = [
         resident for resident in candidates
         if lo <= resident_age_years(resident, turn) <= hi]
@@ -798,29 +846,40 @@ def apply_migration(registry: dict, migration_event: dict, turn: int, *,
     protected_candidates = [
         resident for resident in reproductive_candidates + other_candidates
         if resident["id"] in protected]
-    selected = safe_reproductive[:named_reproductive]
-    selected_ids = {resident["id"] for resident in selected}
+    additional = safe_reproductive[:named_reproductive]
+    additional_ids = {resident["id"] for resident in additional}
     remaining = [
         resident for resident in safe_reproductive + safe_other
-        if resident["id"] not in selected_ids]
+        if resident["id"] not in additional_ids]
     remaining.sort(key=sort_key)
-    selected.extend(remaining[:max(0, named_migrants - len(selected))])
-    if len(selected) < named_migrants:
+    additional.extend(remaining[:max(0, named_migrants - len(additional))])
+    if len(additional) < named_migrants:
         protected_candidates.sort(key=sort_key)
-        selected.extend(
-            protected_candidates[:named_migrants - len(selected)])
-    if len(selected) != named_migrants:
+        additional.extend(
+            protected_candidates[:named_migrants - len(additional)])
+    if len(additional) != named_migrants:
         raise ValueError("migrants exceed living source population")
+    selected.extend(additional)
+    if len(selected) + anonymous_migrants != migrants:
+        raise RuntimeError("resident migration allocation did not conserve migrants")
 
     by_household = {}
     for resident in selected:
         by_household.setdefault(resident["household_id"], []).append(resident)
     moved_rows = []
     household_events = []
+    preferred_household_set = set(selected_preferred_households)
+    shortage_migrant_count = 0
     for household_id, members in sorted(by_household.items()):
         household = after["households"][household_id]
+        migration_count_before = int(household.get("migration_count", 0))
         living_before = _living_in_household(after, household_id)
         selected_member_ids = {resident["id"] for resident in members}
+        reason = ("persistent_household_shortage"
+                  if household_id in preferred_household_set
+                  else "community_pressure")
+        if household_id in preferred_household_set:
+            shortage_migrant_count += len(members)
         if selected_member_ids == {resident["id"] for resident in living_before}:
             destination_household = household
             household["settlement_id"] = destination_id
@@ -835,21 +894,36 @@ def apply_migration(registry: dict, migration_event: dict, turn: int, *,
                 "name": destination_household["name"],
                 "from_settlement": source_id,
                 "settlement_id": destination_id,
+                "reason": reason,
             })
+        destination_household["previous_settlement_id"] = source_id
+        destination_household["last_migration_turn"] = int(turn)
+        destination_household["last_migration_reason"] = reason
+        destination_household["migration_count"] = migration_count_before + 1
         for resident in members:
             resident["settlement_id"] = destination_id
             resident["household_id"] = destination_household["id"]
             moved_rows.append({
                 "resident_id": resident["id"], "name": resident["name"],
                 "household_id": destination_household["id"],
+                "migration_reason": reason,
             })
     after["migrations_total"] = int(after.get("migrations_total", 0)) + migrants
     events = household_events
     if migrants:
+        if shortage_migrant_count == 0:
+            aggregate_reason = "community_pressure"
+        elif shortage_migrant_count == migrants:
+            aggregate_reason = "persistent_household_shortage"
+        else:
+            aggregate_reason = "mixed"
         events.append({
             "turn": int(turn), "kind": "residents_migrated",
             "from_settlement": source_id, "to_settlement": destination_id,
             "migrants": migrants, "residents": moved_rows,
+            "migration_reason": aggregate_reason,
+            "shortage_migrant_count": shortage_migrant_count,
+            "shortage_household_ids": selected_preferred_households,
         })
     return {"registry": after, "events": events}
 

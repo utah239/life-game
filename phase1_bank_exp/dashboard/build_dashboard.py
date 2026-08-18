@@ -523,6 +523,12 @@ def build_residents(registry: dict, current_turn: int,
             "last_activity_turn": household.get("last_activity_turn"),
             "last_activity": household.get("last_activity"),
             "last_actor_id": household.get("last_actor_id"),
+            "previous_settlement_id": household.get(
+                "previous_settlement_id"),
+            "last_migration_turn": household.get("last_migration_turn"),
+            "last_migration_reason": household.get(
+                "last_migration_reason"),
+            "migration_count": int(household.get("migration_count", 0)),
             "goods_holdings": {
                 key: round3(value) for key, value in goods_account.get(
                     "holdings", {}).items()},
