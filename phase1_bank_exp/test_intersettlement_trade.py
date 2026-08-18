@@ -7,6 +7,8 @@ from institutions import barter
 from institutions.intersettlement_trade import (
     PORTABLE_GOODS,
     plan_intersettlement_trade,
+    route_trade_capacity,
+    settlement_logistics_scale,
     trade_capacity,
 )
 from institutions.local_credit import LOCAL_CREDIT_STAGE_ISOLATED
@@ -91,7 +93,82 @@ class IntersettlementTradeTest(unittest.TestCase):
             row for row in result["events"]
             if row["good"] == "food" and row["to_settlement"] == "upland")
         self.assertEqual(event["credit_capacity"], 0.25)
-        self.assertEqual(event["amount"], 1.0)
+        self.assertEqual(event["route_logistics_scale"], round(
+            settlement_logistics_scale(before["upland"]), 12))
+        self.assertEqual(event["amount"], event["route_capacity"])
+
+    def test_logistics_scale_is_bottlenecked_by_people_and_infrastructure(self):
+        rows = network()
+        home = rows["home"]
+        baseline = settlement_logistics_scale(home)
+        self.assertGreater(baseline, 1.0)
+
+        few_workers = copy.deepcopy(home)
+        few_workers["age_cohorts"] = {
+            "children": 100, "productive": 10, "elderly": 10}
+        few_workers["productive_population"] = 10
+        worker_limited = settlement_logistics_scale(few_workers)
+        self.assertLess(worker_limited, baseline)
+
+        little_infrastructure = copy.deepcopy(home)
+        little_infrastructure["local_economy"]["provisioning_scale"] = 0.1
+        self.assertEqual(
+            settlement_logistics_scale(little_infrastructure), 0.1)
+
+        no_workers = copy.deepcopy(home)
+        no_workers["age_cohorts"] = {
+            "children": 100, "productive": 0, "elderly": 20}
+        no_workers["productive_population"] = 0
+        self.assertEqual(settlement_logistics_scale(no_workers), 0.0)
+
+    def test_route_capacity_scales_with_an_equivalent_larger_world(self):
+        small = network()
+        small["riverside"]["population"] = 0
+        small["home"]["local_economy"]["food"] = 200.0
+        small["upland"]["local_economy"]["food"] = 0.0
+        large = copy.deepcopy(small)
+        factor = 4000
+        for row in large.values():
+            row["population"] *= factor
+            row["reproductive_population"] *= factor
+            row["productive_population"] *= factor
+            row["age_cohorts"] = {
+                key: value * factor
+                for key, value in row["age_cohorts"].items()}
+            economy = row["local_economy"]
+            economy["provisioning_scale"] *= factor
+            economy["demand_scales_by_good"] = {
+                key: value * factor
+                for key, value in economy[
+                    "demand_scales_by_good"].items()}
+            for good in ("food", "medicine", "shelter", "tools"):
+                economy[good] *= factor
+
+        small_event = next(row for row in plan_intersettlement_trade(
+            small, 1)["events"] if row["good"] == "food")
+        large_event = next(row for row in plan_intersettlement_trade(
+            large, 1)["events"] if row["good"] == "food")
+        self.assertAlmostEqual(
+            large_event["route_logistics_scale"],
+            small_event["route_logistics_scale"] * factor, 6)
+        self.assertAlmostEqual(
+            large_event["route_capacity"],
+            small_event["route_capacity"] * factor, delta=0.01)
+
+    def test_route_capacity_observes_both_endpoint_and_credit_limits(self):
+        rows = network()
+        source = rows["home"]
+        destination = rows["upland"]
+        details = route_trade_capacity(source, destination, 0.25)
+        self.assertEqual(details["source_logistics_scale"],
+                         settlement_logistics_scale(source))
+        self.assertEqual(details["destination_logistics_scale"],
+                         settlement_logistics_scale(destination))
+        self.assertEqual(details["route_logistics_scale"], min(
+            details["source_logistics_scale"],
+            details["destination_logistics_scale"]))
+        self.assertEqual(details["route_capacity"], round(
+            4.0 * details["route_logistics_scale"] * 0.25, 6))
 
     def test_input_and_rng_are_unchanged(self):
         before = network()

@@ -3,7 +3,8 @@
 
 食料・医薬品・道具だけを、余剰のある集落から不足している集落へ移す。
 住居と生産能力は土地に結び付くため移動させない。移送量は送り手と受け手の
-地域信用Stageのうち悪い側で制限され、どちらかが孤立していれば交易しない。
+地域信用Stageのうち悪い側に加え、両端の生活基盤と生産年齢人口の小さい側で
+制限される。どちらかが孤立・無人・物流不能なら交易しない。
 
 この関数は財を生産・消費せず、入力を変更せず、乱数も使わない。したがって
 交易前後で各財の世界総量が保存される。交易の成立は双方の共有台帳に小さな
@@ -20,7 +21,14 @@ from institutions.local_credit import (
     LOCAL_CREDIT_STAGE_ISOLATED,
     LOCAL_CREDIT_STAGE_PERSONAL,
 )
-from institutions.population import POPULATION_STAGE_ABANDONED
+from institutions.household_needs import (
+    REFERENCE_AGE_COHORTS,
+    REFERENCE_PROVISIONING_SCALE,
+)
+from institutions.population import (
+    AGE_COHORT_PRODUCTIVE,
+    POPULATION_STAGE_ABANDONED,
+)
 
 
 PORTABLE_GOODS = ("food", "medicine", "tools")
@@ -37,7 +45,13 @@ def trade_references() -> dict:
 # しないため、集落ごとの生活条件と不足は交易後も残る。
 TRADE_RESERVE_RATIO = 0.72
 TRADE_TARGET_RATIO = 0.90
+# 基準生活基盤1単位・健全な地域信用で、1経路が1財について月に運べる量。
+# 実際の上限は下のroute_trade_capacity()で、両端の生活基盤と生産年齢人口に
+# 比例する。したがって100万人世界でも既定250人世界と同じ相対輸送力になる。
 TRADE_MAX_PER_ROUTE_PER_GOOD = 4.0
+TRADE_REFERENCE_PRODUCTIVE_WORKERS_PER_SCALE = (
+    REFERENCE_AGE_COHORTS[AGE_COHORT_PRODUCTIVE]
+    / REFERENCE_PROVISIONING_SCALE)
 
 # 共有台帳が個人化すると細い取引だけになり、孤立すると停止する。
 LOCAL_CREDIT_TRADE_CAPACITY = {
@@ -56,6 +70,58 @@ TRADE_TRUST_GAIN_CAP = 0.40
 def trade_capacity(local_credit_stage: int) -> float:
     """地域信用Stageから交易能力(0〜1)を返す。"""
     return LOCAL_CREDIT_TRADE_CAPACITY.get(int(local_credit_stage), 0.0)
+
+
+def settlement_logistics_scale(settlement: dict) -> float:
+    """集落が月次物流を運営できる規模を返す。
+
+    在庫上限・設備量を表す``provisioning_scale``と、現在いる生産年齢人口を
+    基準世界の人数へ換算した規模の小さい側を採る。設備だけ残った無人集落も、
+    人口だけ膨らんで設備が追い付かない集落も物流能力を水増ししない。
+
+    ``age_cohorts``がある状態ではproductive cohortを正本とする。古い状態や
+    最小fixtureでは``productive_population``→``reproductive_population``→
+    ``population``の順にfallbackし、最終的に総人口で上限を掛ける。
+    入力は変更せず、乱数も使わない。
+    """
+    population = max(0, int(settlement.get("population", 0)))
+    if population <= 0:
+        return 0.0
+    cohorts = settlement.get("age_cohorts")
+    if isinstance(cohorts, dict) and AGE_COHORT_PRODUCTIVE in cohorts:
+        raw_productive = cohorts[AGE_COHORT_PRODUCTIVE]
+    elif settlement.get("productive_population") is not None:
+        raw_productive = settlement["productive_population"]
+    elif settlement.get("reproductive_population") is not None:
+        raw_productive = settlement["reproductive_population"]
+    else:
+        # 旧fixtureに人口しか無い場合、既存の物流を突然0へしない。生活基盤側が
+        # もう一方の上限になるため、総人口を仮の最大労働力として使う。
+        raw_productive = population
+    productive = max(0, min(population, int(raw_productive)))
+    infrastructure_scale = barter.normalize_provisioning_scale(
+        settlement.get("local_economy", {}).get("provisioning_scale", 1.0))
+    worker_scale = (
+        productive / TRADE_REFERENCE_PRODUCTIVE_WORKERS_PER_SCALE
+        if TRADE_REFERENCE_PRODUCTIVE_WORKERS_PER_SCALE > 0.0 else 0.0)
+    return round(min(infrastructure_scale, worker_scale), 12)
+
+
+def route_trade_capacity(source: dict, destination: dict,
+                         credit_capacity: float) -> dict:
+    """両端の物流規模と地域信用から、1経路・1財の月次上限を返す。"""
+    source_scale = settlement_logistics_scale(source)
+    destination_scale = settlement_logistics_scale(destination)
+    route_scale = round(min(source_scale, destination_scale), 12)
+    credit = max(0.0, min(1.0, float(credit_capacity)))
+    return {
+        "source_logistics_scale": source_scale,
+        "destination_logistics_scale": destination_scale,
+        "route_logistics_scale": route_scale,
+        "credit_capacity": credit,
+        "route_capacity": round(
+            TRADE_MAX_PER_ROUTE_PER_GOOD * route_scale * credit, 6),
+    }
 
 
 def _eligible(settlement: dict) -> bool:
@@ -135,9 +201,11 @@ def plan_intersettlement_trade(settlements: dict, turn: int) -> dict:
                     trade_capacity(source_economy.get("local_credit_stage", 0)),
                     trade_capacity(destination_economy.get(
                         "local_credit_stage", 0)))
+                route = route_trade_capacity(
+                    source, destination, capacity)
                 amount = round(min(
                     spare, need,
-                    TRADE_MAX_PER_ROUTE_PER_GOOD * capacity), 6)
+                    route["route_capacity"]), 6)
                 if amount <= 1e-9:
                     continue
 
@@ -172,7 +240,14 @@ def plan_intersettlement_trade(settlements: dict, turn: int) -> dict:
                     "to_settlement": destination_id,
                     "good": good,
                     "amount": amount,
-                    "credit_capacity": capacity,
+                    "credit_capacity": route["credit_capacity"],
+                    "source_logistics_scale": route[
+                        "source_logistics_scale"],
+                    "destination_logistics_scale": route[
+                        "destination_logistics_scale"],
+                    "route_logistics_scale": route[
+                        "route_logistics_scale"],
+                    "route_capacity": route["route_capacity"],
                     "source_trust_gain": gain,
                     "destination_trust_gain": gain,
                 })
