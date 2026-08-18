@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """途中選抜なしの全scenario総当たり走査テスト。"""
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -130,7 +131,9 @@ class ExhaustiveMatrixEndToEndTest(unittest.TestCase):
                 command, cwd=batch_sweep.PROJECT_DIR, capture_output=True,
                 text=True, timeout=120)
             self.assertEqual(result.returncode, 0, result.stderr)
-            with sqlite3.connect(db_path) as connection:
+            # sqlite3.Connection.__exit__ does not close the file handle;
+            # closing it explicitly keeps temporary cleanup portable.
+            with closing(sqlite3.connect(db_path)) as connection:
                 self.assertEqual(connection.execute(
                     "SELECT COUNT(*) FROM configs").fetchone()[0], 2)
                 self.assertEqual(connection.execute(

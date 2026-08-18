@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """大量パラメータ走査の決定性・隔離・再開・保存境界テスト。"""
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -128,7 +129,10 @@ class SweepEndToEndTest(unittest.TestCase):
                                     capture_output=True, text=True, timeout=60)
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertIn("pending=0", second.stdout)
-            with sqlite3.connect(db_path) as connection:
+            # sqlite3.Connection.__exit__ commits or rolls back, but does not
+            # close the handle.  Windows therefore keeps the temporary DB
+            # locked unless the connection is explicitly closed.
+            with closing(sqlite3.connect(db_path)) as connection:
                 self.assertEqual(connection.execute(
                     "SELECT COUNT(*) FROM configs").fetchone()[0], 3)
                 self.assertEqual(connection.execute(
