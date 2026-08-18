@@ -1,0 +1,17 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: lifegame-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lifegame
+      POSTGRES_USER: lifegame
+      POSTGRES_PASSWORD: lifegame_dev_only
+    ports:
+      - "127.0.0.1:15432:5432"   # ホストのみに公開(外部からは到達不可)
+    volumes:
+      - lifegame_db_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+
+volumes:
+  lifegame_db_data:

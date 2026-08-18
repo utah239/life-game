@@ -1,0 +1,57 @@
+name: life-game-experiment
+
+services:
+  life-game-experiment:
+    container_name: life_game_experiment
+    image: python:3.12-alpine
+    restart: unless-stopped
+    init: true
+    working_dir: /app
+    # python:3.12-alpine のnobody。コンテナ内でrootを使わない。
+    user: "65534:65534"
+    environment:
+      TZ: Asia/Tokyo
+      # app本体はread-onlyのまま、隔離workerが毎月同じPythonソースを
+      # 再解析しないようbytecodeだけを揮発性tmpfsへ置く。
+      PYTHONPYCACHEPREFIX: /tmp/pycache
+      PYTHONUNBUFFERED: "1"
+      HOME: /tmp
+      LIFE_GAME_AQUARIUM_STATE: /state/aquarium_world.json
+      LIFE_GAME_AQUARIUM_HTML: /state/aquarium.html
+    command:
+      - python
+      - dashboard/server.py
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8765"
+    ports:
+      # NASの固定LAN IPv4にだけ公開。WAN/Cloudflare Tunnelには載せない。
+      - "192.168.0.22:8016:8765"
+    volumes:
+      # NAS上の配置先 /volume1/docker/life-game/app を読み取り専用で参照。
+      - ./app:/app:ro
+      # 世界checkpoint・最新観察HTML・atomic frame streamを書き込む専用領域。アプリ本体は
+      # 引き続きread-onlyで、コンテナ再作成後も水槽を継続する。
+      - ./state:/state:rw
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 1g
+    stop_grace_period: 10s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8765/api/schema', timeout=3).read(1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

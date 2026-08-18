@@ -1,0 +1,147 @@
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+.ipynb_checkpoints/
+__pypackages__/
+.pyright/
+.cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.nbi
+*.nbc
+
+# Local Python environments
+.venv/
+.venv-*/
+venv/
+env/
+
+# Python/package and frontend build products
+build/
+dist/
+*.egg-info/
+node_modules/
+.npm/
+.pnpm-store/
+.parcel-cache/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+.netrc
+.ssh/
+id_rsa*
+id_ed25519*
+*.pem
+*.key
+*.p12
+*.pfx
+.secrets/
+secrets/
+credentials*.json
+service-account*.json
+config.local.*
+settings.local.*
+docker-compose.override.yml
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+*.orig
+*.rej
+*.pid
+
+# Runtime logs and event stores
+*.log
+*.jsonl
+visualize_trace.json
+.runtime/
+
+# Conventional locations for reproducible-but-generated runs. Keep the
+# command/configuration in Git and store the payload itself on the NAS.
+artifacts/
+runs/
+outputs/
+checkpoints/
+recordings/
+captures/
+frames/
+tmp/
+temp/
+
+# Database and sweep working files
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Large numerical/GPU outputs and generated archives
+*.parquet
+*.arrow
+*.feather
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.joblib
+*.onnx
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.gguf
+*.ptx
+*.cubin
+*.fatbin
+*.nsys-rep
+*.qdrep
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+*.zst
+
+# Generated dashboard and experiment artifacts
+phase1_bank_exp/dashboard/life_ledger.html
+phase1_bank_exp/dashboard/reports/
+phase1_bank_exp/dashboard/sweeps/
+phase1_bank_exp/deploy/nas/app/
+phase1_bank_exp/deploy/nas/state/
+phase1_bank_exp/deploy/nas/backups/
+phase1_bank_exp/deploy/nas/.staging/
+
+# Documentation-site generators, should one be introduced later.
+docs/_build/
+site/
+
+# Explicitly allow small, intentional test fixtures if added later.
+!**/tests/fixtures/*.jsonl

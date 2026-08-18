@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Life Game デジタル水槽</title>
+<style>
+  :root { color-scheme: light dark; --bg:#e8ebe2; --panel:#f8f9f3; --ink:#1b231f;
+    --muted:#667066; --rule:#c9cebb; --accent:#76521e; --danger:#9b3b35; }
+  @media (prefers-color-scheme:dark) { :root { --bg:#101617; --panel:#192123;
+    --ink:#e7ebe4; --muted:#98a397; --rule:#303a37; --accent:#d3a55e; --danger:#e18c84; } }
+  * { box-sizing:border-box; }
+  html,body { width:100%; height:100%; overflow:hidden; }
+  body { margin:0; background:#010304; color:var(--ink); font:14px/1.45 system-ui,sans-serif; }
+  /* fixed creates a stacking context and would trap the drawer below the
+     root-level backdrop. Keep the shell non-stacking so aside(z60) remains
+     above the backdrop(z55) and its form controls receive pointer events. */
+  .shell { position:absolute; inset:0; min-width:0; }
+  aside { position:fixed; z-index:60; inset:0 auto 0 0; width:min(380px,calc(100vw - 44px));
+    padding:18px; border-right:1px solid var(--rule); background:color-mix(in srgb,var(--panel) 96%,transparent);
+    backdrop-filter:blur(16px); overflow:auto; transform:translateX(calc(-100% - 8px));
+    transition:transform 180ms ease; box-shadow:16px 0 50px rgba(0,0,0,.34); }
+  body.console-open aside { transform:translateX(0); }
+  main { position:absolute; inset:0; min-width:0; padding:0; }
+  h1 { font-size:20px; margin:0 0 4px; } .sub { color:var(--muted); margin:0 0 16px; }
+  fieldset { border:1px solid var(--rule); border-radius:6px; margin:0 0 12px; padding:10px; }
+  legend { font-weight:650; padding:0 6px; }
+  .field { display:grid; grid-template-columns:minmax(0,1fr) 100px; align-items:center;
+    gap:8px; margin:7px 0; }
+  label { color:var(--muted); font-size:12.5px; }
+  input,select,button { font:inherit; }
+  input,select { width:100%; border:1px solid var(--rule); border-radius:4px; padding:6px 7px;
+    background:var(--bg); color:var(--ink); }
+  .actions { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin-top:12px; }
+  .report-link { display:block; text-align:center; margin-top:9px; color:var(--accent); }
+  .aquarium { border-color:color-mix(in srgb,var(--accent) 50%,var(--rule)); }
+  .aquarium h2 { font-size:15px; margin:0 0 5px; }
+  .aquarium-copy { color:var(--muted); font-size:12px; margin:0 0 8px; }
+  .aquarium-clock { display:grid; grid-template-columns:1fr 1fr; gap:7px; }
+  .aquarium-clock label { display:grid; gap:3px; }
+  .aquarium-actions { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:8px; }
+  .aquarium-actions .wide { grid-column:1/-1; }
+  #aquarium-status { white-space:pre-wrap; background:var(--bg); border-radius:4px;
+    padding:8px; margin-top:8px; min-height:4.2em; font-variant-numeric:tabular-nums; }
+  button { border:1px solid var(--rule); border-radius:5px; padding:8px 10px; cursor:pointer;
+    background:var(--bg); color:var(--ink); }
+  button.primary { background:var(--accent); color:white; border-color:var(--accent); grid-column:1/-1; }
+  button:disabled { opacity:.55; cursor:wait; }
+  #status { min-height:2.8em; color:var(--muted); margin:10px 2px 0; white-space:pre-wrap; }
+  #status.error { color:var(--danger); }
+  iframe { display:block; width:100%; height:100dvh; border:0; background:#010304; }
+  .console-backdrop { position:fixed; z-index:55; inset:0; border:0; padding:0;
+    background:rgba(0,0,0,.34); opacity:0; pointer-events:none; transition:opacity 180ms ease; }
+  body.console-open .console-backdrop { opacity:1; pointer-events:auto; }
+  .viewport-actions { position:fixed; z-index:50; right:12px; bottom:max(12px,env(safe-area-inset-bottom));
+    display:flex; gap:7px; }
+  .viewport-actions button { border-color:#31403d; border-radius:999px;
+    background:rgba(4,9,10,.82); color:#b8c5c1; box-shadow:0 4px 18px rgba(0,0,0,.32);
+    backdrop-filter:blur(10px); padding:8px 12px; }
+  .viewport-actions button:hover { background:rgba(17,29,29,.94); color:#eef7f3; }
+  .hidden { display:none; }
+  @media (max-width:680px) { aside{width:min(360px,calc(100vw - 28px));padding:14px}
+    .viewport-actions{right:8px;bottom:max(8px,env(safe-area-inset-bottom))}
+    .viewport-actions button{padding:7px 10px} }
+</style>
+</head>
+<body>
+<button class="console-backdrop" id="console-backdrop" type="button" aria-label="設定を閉じる"></button>
+<div class="viewport-actions" aria-label="水槽画面の操作">
+  <button id="fullscreen-toggle" type="button">全画面</button>
+  <button id="console-toggle" type="button" aria-expanded="false">設定</button>
+</div>
+<div class="shell">
+  <aside>
+    <h1>実験コンソール</h1>
+    <p class="sub">単発実験と、保存されて自動進行する世界を同じ画面で観察します。</p>
+    <fieldset class="aquarium">
+      <legend>デジタル水槽</legend>
+      <h2>永続世界</h2>
+      <p class="aquarium-copy">開始時は下のフォーム値で短い履歴を作ります。以後はサーバー上で保存され、画面を閉じても進みます。</p>
+      <div class="aquarium-clock">
+        <label>開始時の月数<input id="aquarium-initial" type="number" min="1" max="5000" step="1" value="12"></label>
+        <label>実時間/更新（秒）<input id="aquarium-seconds" type="number" min="30" max="86400" step="1" value="30" aria-describedby="aquarium-seconds-hint"></label>
+        <label>更新ごとの月数<input id="aquarium-months" type="number" min="1" max="120" step="1" value="1"></label>
+        <label>詳細履歴（月）<input id="aquarium-history" type="number" min="120" max="120000" step="120" value="2400"></label>
+      </div>
+      <p class="aquarium-copy" id="aquarium-seconds-hint">計算時間の実測前は、安全下限を30秒にしています。</p>
+      <div class="aquarium-actions">
+        <button class="wide" id="aquarium-start" type="button">この設定で水槽を開始</button>
+        <button id="aquarium-toggle" type="button" disabled>一時停止</button>
+        <button id="aquarium-month" type="button" disabled>+1か月</button>
+        <button id="aquarium-year" type="button" disabled>+1年</button>
+        <button id="aquarium-view" type="button" disabled>現在を見る</button>
+      </div>
+      <div id="aquarium-status">水槽状態を確認中…</div>
+    </fieldset>
+    <form id="experiment-form"></form>
+    <div class="actions">
+      <button class="primary" id="run" type="button">再シミュレーション</button>
+      <button id="reset" type="button">既定値</button>
+      <button id="save-settings" type="button">設定保存</button>
+      <button id="load-settings" type="button">設定読込</button>
+      <button id="download-html" type="button" disabled>HTML保存</button>
+    </div>
+    <input class="hidden" id="settings-file" type="file" accept="application/json,.json">
+    <div id="status" role="status" aria-live="polite"></div>
+    <a class="report-link" href="/sweeps" target="_blank" rel="noopener">一括走査レポート</a>
+  </aside>
+  <main><iframe id="dashboard" title="シミュレーション結果" sandbox="allow-scripts"
+    src="/life_ledger.html"></iframe></main>
+</div>
+<script>
+let schema = null;
+let currentHtml = null;
+let aquariumState = null;
+let aquariumRevision = null;
+let aquariumBusy = false;
+let aquariumFrameScroll = {x: 0, y: 0, valid: false};
+let aquariumFrameView = 'aquarium';
+let aquariumFrameSelection = null;
+let aquariumFrameCamera = {x: 0.5, y: 0.5, zoom: 1};
+let pendingAquariumScrollRestore = false;
+let pendingPageScroll = null;
+let residentDetailRequestSerial = 0;
+let aquariumClockPhase = 0.5;
+let aquariumFrameReady = false;
+let aquariumStreamCursor = {
+  streamId: null, revision: null, after: null, turn: null, pending: false,
+};
+let aquariumStreamStatus = {
+  buffered: 0, reserve: 0, target: 100, low: 30, high: 300,
+  mode: 'prebuffering', sequence: null, turn: null,
+};
+let aquariumStreamLastFetch = 0;
+let aquariumStreamUnavailable = false;
+const controls = new Map();
+const form = document.getElementById('experiment-form');
+const statusEl = document.getElementById('status');
+
+function setConsoleOpen(open) {
+  document.body.classList.toggle('console-open', Boolean(open));
+  document.getElementById('console-toggle').setAttribute(
+    'aria-expanded', String(Boolean(open)));
+}
+document.getElementById('console-toggle').addEventListener('click', () =>
+  setConsoleOpen(!document.body.classList.contains('console-open')));
+document.getElementById('console-backdrop').addEventListener(
+  'click', () => setConsoleOpen(false));
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && document.body.classList.contains('console-open')) {
+    setConsoleOpen(false);
+  }
+});
+
+function renderFullscreenButton() {
+  document.getElementById('fullscreen-toggle').textContent =
+    document.fullscreenElement ? '全画面終了' : '全画面';
+}
+document.getElementById('fullscreen-toggle').addEventListener('click', async () => {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen();
+  } catch (error) {
+    setStatus('全画面表示を開始できません: ' + error.message, true);
+  }
+});
+document.addEventListener('fullscreenchange', renderFullscreenButton);
+
+function aquariumClockPayload() {
+  if (!aquariumState?.exists) return null;
+  const tickSeconds = Math.max(
+    0.001, Number(aquariumState.clock?.tick_seconds) || 1);
+  const nextTick = Number(aquariumState.next_tick_at);
+  if (!aquariumState.paused && Number.isFinite(nextTick)) {
+    aquariumClockPhase = Math.max(0, Math.min(
+      1, (Date.now() / 1000 - (nextTick - tickSeconds)) / tickSeconds));
+  }
+  return {
+    paused: Boolean(aquariumState.paused),
+    turn: Number(aquariumState.summary?.completed_turn) || 0,
+    tick_seconds: tickSeconds,
+    next_tick_at: Number.isFinite(nextTick) ? nextTick : null,
+    phase: aquariumClockPhase,
+  };
+}
+
+function postAquariumClock(frame=document.getElementById('dashboard')) {
+  const clock = aquariumClockPayload();
+  if (clock) frame.contentWindow?.postMessage({
+    type: 'life-ledger-live-clock', clock,
+  }, '*');
+}
+
+function resetAquariumFrameCamera() {
+  aquariumFrameCamera = {x: 0.5, y: 0.5, zoom: 1};
+}
+
+function setStatus(message, error=false) {
+  statusEl.textContent = message;
+  statusEl.classList.toggle('error', error);
+}
+function aquariumButtons() {
+  const exists = Boolean(aquariumState && aquariumState.exists);
+  const extinct = Boolean(exists && aquariumState.summary.world_extinct);
+  const tickInput = document.getElementById('aquarium-seconds');
+  const minimumTick = Math.max(
+    1, Number(aquariumState?.minimum_tick_seconds) || 30);
+  tickInput.min = String(minimumTick);
+  const tickValid = Number.isFinite(Number(tickInput.value))
+    && Number(tickInput.value) >= minimumTick
+    && Number(tickInput.value) <= Number(tickInput.max);
+  const performance = aquariumState?.compute_performance;
+  const phaseLabels = {
+    simulation_seconds: '数値計算',
+    compact_observation_seconds: '履歴整理',
+    build_dashboard_seconds: '表示データ',
+    summary_seconds: '集計',
+    prepare_world_seconds: 'world準備',
+    worker_boundary_seconds: 'worker転送・起動',
+    commit_seconds: 'stream/checkpoint保存',
+    orchestration_seconds: '制御処理',
+  };
+  const dominantPhase = Object.entries(performance?.breakdown_seconds || {})
+    .filter(([name, value]) => Object.hasOwn(phaseLabels, name)
+      && Number.isFinite(Number(value)))
+    .sort((left, right) => Number(right[1]) - Number(left[1]))[0];
+  const phaseNote = dominantPhase
+    ? ` 最大内訳: ${phaseLabels[dominantPhase[0]]} ${Number(dominantPhase[1]).toFixed(1)}秒。`
+    : '';
+  document.getElementById('aquarium-seconds-hint').textContent =
+    Number(performance?.sample_count) > 0
+      ? `直近の1更新相当 ${Number(performance.last_compute_seconds).toFixed(1)}秒 / 平滑値 ${Number(performance.ema_compute_seconds).toFixed(1)}秒。50%の余裕を含む最低値は${minimumTick}秒です。`
+        + phaseNote
+      : `計算時間の実測前は、安全下限を${minimumTick}秒にしています。`;
+  document.getElementById('aquarium-start').disabled =
+    aquariumBusy || !schema || !tickValid;
+  document.getElementById('aquarium-toggle').disabled = aquariumBusy || !exists || extinct;
+  document.getElementById('aquarium-month').disabled = aquariumBusy || !exists || extinct;
+  document.getElementById('aquarium-year').disabled = aquariumBusy || !exists || extinct;
+  document.getElementById('aquarium-view').disabled = aquariumBusy || !exists || !aquariumState.dashboard_available;
+  if (exists) document.getElementById('aquarium-toggle').textContent = aquariumState.paused ? '再開' : '一時停止';
+}
+function renderAquariumStatus() {
+  const el = document.getElementById('aquarium-status');
+  aquariumButtons();
+  if (!aquariumState || !aquariumState.exists) {
+    el.textContent = aquariumState && aquariumState.error ? '状態ファイルエラー: ' + aquariumState.error : 'まだ水槽はありません。';
+    return;
+  }
+  const s = aquariumState.summary;
+  const mode = s.world_extinct ? '絶滅・停止' : aquariumState.paused ? '一時停止中' : '自動進行中';
+  const stages = `銀行${s.bank_stage} / 通貨${s.currency_stage} / 地域信用${s.local_credit_stage} / 執行${s.enforcement_stage} / 物々交換${s.barter_stage} / 人口${s.population_stage}`;
+  const cohort = Number(s.anonymous_resident_count || 0) > 0
+    ? ` · 記名${Number(s.named_living_resident_count || 0).toLocaleString()} / 匿名${Number(s.anonymous_resident_count).toLocaleString()}`
+    : '';
+  const workersByGood = s.activity_workers_by_good || {};
+  const requiredByGood = s.activity_required_workers_by_good || {};
+  const laborByGood = [
+    ['食事', 'food'], ['薬', 'medicine'], ['住居', 'shelter'], ['道具', 'tools'],
+  ].map(([label, key]) => `${label}${Number(workersByGood[key] || 0).toLocaleString()}/${Number(requiredByGood[key] || 0).toLocaleString()}`).join(' · ');
+  let line = `${mode} · T${s.completed_turn}（${(s.completed_turn / 12).toFixed(1)}年） · 第${s.generation}世代\n世界人口 ${Number(s.total_population ?? s.population).toLocaleString()} / 生産年齢 ${Number(s.total_productive_population ?? s.productive_population ?? 0).toLocaleString()}（${s.settlement_count || 1}集落 / ${s.household_count || 0}世帯 / ${s.organization_count || 0}組織）${cohort} · 必需財担当 ${Number(s.activity_worker_total || 0).toLocaleString()}/${Number(s.activity_required_worker_total || 0).toLocaleString()}人（匿名${Number(s.activity_anonymous_worker_total || 0).toLocaleString()}・他活動可${Number(s.activity_unassigned_productive_total || 0).toLocaleString()}）${Number(s.activity_labor_constrained_community_count || 0) ? ` · 労働不足${Number(s.activity_labor_constrained_community_count).toLocaleString()}共同体` : ''} · 焦点 ${s.focus_resident_name || s.focus_settlement_id || 'home'}${s.focus_household_name ? ` / ${s.focus_household_name}` : ''} · 暮らしの記録 ${s.household_activity_total || 0}件 · 累計移住 ${s.migration_total || 0}人 · 交易 ${Number(s.trade_volume_total || 0).toFixed(1)}財/${s.trade_event_count || 0}件 · NPC死亡 ${s.npc_death_count || 0}人 · 詳細 T${s.history_start_turn}〜\n${stages}`;
+  line += `\n財別担当 ${laborByGood}`;
+  if (aquariumFrameReady) {
+    const bufferMode = aquariumStreamStatus.mode === 'prebuffering'
+      ? ' · 準備中' : aquariumStreamStatus.mode === 'paused' ? ' · 停止中' : '';
+    line += `\n表示queue ${aquariumStreamStatus.buffered} frame`
+      + ` · 先読み ${aquariumStreamStatus.reserve}/${aquariumStreamStatus.target} frame`
+      + bufferMode;
+    if (aquariumStreamStatus.turn !== null) {
+      line += ` · 再生T${aquariumStreamStatus.turn}`;
+    }
+  }
+  if (aquariumState.last_error) line += '\n更新エラー: ' + aquariumState.last_error;
+  el.textContent = line;
+}
+function showAquarium() {
+  if (!aquariumState || !aquariumState.exists || !aquariumState.dashboard_available) return;
+  const frame = document.getElementById('dashboard');
+  pendingAquariumScrollRestore = aquariumFrameScroll.valid;
+  pendingPageScroll = {x: window.scrollX, y: window.scrollY};
+  aquariumFrameReady = false;
+  frame.removeAttribute('srcdoc');
+  frame.src = '/aquarium.html?rev=' + encodeURIComponent(aquariumState.revision);
+  currentHtml = null;
+  document.getElementById('download-html').disabled = true;
+}
+
+function resetAquariumStreamCursor() {
+  aquariumStreamCursor = {
+    streamId: null, revision: null, after: null, turn: null, pending: false,
+  };
+  aquariumStreamStatus = {
+    buffered: 0, reserve: 0, target: 100, low: 30, high: 300,
+    mode: 'prebuffering', sequence: null, turn: null,
+  };
+}
+
+async function pullAquariumFrames(forceKeyframe=false) {
+  if (!aquariumFrameReady || !aquariumState?.exists
+      || aquariumStreamCursor.pending || aquariumStreamUnavailable) return;
+  const now = performance.now();
+  if (!forceKeyframe && now - aquariumStreamLastFetch < 350) return;
+  aquariumStreamLastFetch = now;
+  aquariumStreamCursor.pending = true;
+  let receivedChunk = false;
+  try {
+    const params = new URLSearchParams({limit: '150'});
+    if (!forceKeyframe && aquariumStreamCursor.streamId) {
+      params.set('stream_id', aquariumStreamCursor.streamId);
+      params.set('revision', String(aquariumStreamCursor.revision));
+      if (aquariumStreamCursor.after !== null) {
+        params.set('after', String(aquariumStreamCursor.after));
+      }
+    }
+    const response = await fetch(
+      '/api/aquarium/frames?' + params.toString(), {cache: 'no-store'});
+    if (!response.ok) {
+      const error = new Error(response.statusText);
+      // 旧serverだけはstream非対応としてHTML reloadへ戻す。一時的な
+      // 5xx・Wi-Fi切断を永久fallbackへ昇格させてはいけない。
+      error.streamUnsupported = [404, 405, 501].includes(response.status);
+      throw error;
+    }
+    const chunk = await response.json();
+    if (!chunk.exists) return;
+    receivedChunk = true;
+    aquariumStreamCursor.streamId = chunk.stream_id;
+    aquariumStreamCursor.revision = chunk.base_revision;
+    if (chunk.keyframe?.turns?.length) {
+      aquariumStreamCursor.turn = Number(chunk.keyframe.turns.at(-1).t);
+    } else if (Number.isFinite(Number(chunk.frame_turn_end))) {
+      aquariumStreamCursor.turn = Number(chunk.frame_turn_end);
+    }
+    if (chunk.frames?.length) {
+      aquariumStreamCursor.after = chunk.frames.at(-1).sequence;
+    }
+    document.getElementById('dashboard').contentWindow?.postMessage({
+      type: 'life-ledger-stream-chunk', chunk,
+    }, '*');
+  } catch (error) {
+    if (error.streamUnsupported) {
+      // 古いserverとの混在時だけ、従来のHTML更新へ安全に戻す。
+      aquariumStreamUnavailable = true;
+      if (aquariumState?.dashboard_available
+          && aquariumState.revision !== aquariumStreamCursor.revision) {
+        showAquarium();
+      }
+    } else {
+      // stream endpointが存在する環境の一時失敗ではiframe/queueを維持し、
+      // 同じcursorから再試行する。次revisionごとの全画面切替を起こさない。
+      aquariumStreamLastFetch = 0;
+      window.setTimeout(() => pullAquariumFrames(false), 1000);
+    }
+    setStatus('水槽stream: ' + error.message, true);
+  } finally {
+    aquariumStreamCursor.pending = false;
+    if (receivedChunk
+        && Number(aquariumState?.summary?.completed_turn)
+        > Number(aquariumStreamCursor.turn ?? -1)
+        && !aquariumStreamUnavailable) {
+      aquariumStreamLastFetch = 0;
+      window.setTimeout(() => pullAquariumFrames(false), 500);
+    }
+  }
+}
+async function forwardResidentDetail(residentId, frame) {
+  const serial = ++residentDetailRequestSerial;
+  try {
+    const response = await fetch(
+      '/api/aquarium/resident?id=' + encodeURIComponent(residentId),
+      {cache: 'no-store'});
+    if (!response.ok) return;
+    const detail = await response.json();
+    if (serial !== residentDetailRequestSerial
+        || aquariumFrameSelection !== residentId) return;
+    frame.contentWindow?.postMessage({
+      type: 'life-ledger-resident-detail', detail,
+    }, '*');
+  } catch (_) {
+    // 水槽更新との競合で対象がarchiveされた場合は埋め込み概要表示へ戻る。
+  }
+}
+window.addEventListener('message', event => {
+  const frame = document.getElementById('dashboard');
+  if (event.source !== frame.contentWindow) return;
+  if (event.data?.type === 'life-ledger-scroll') {
+    aquariumFrameScroll = {
+      x: Number(event.data.x) || 0,
+      y: Number(event.data.y) || 0,
+      valid: true,
+    };
+  } else if (event.data?.type === 'life-ledger-view') {
+    aquariumFrameView = String(event.data.view || 'aquarium');
+  } else if (event.data?.type === 'life-ledger-aquarium-selection') {
+    aquariumFrameSelection = event.data.residentId || null;
+  } else if (event.data?.type === 'life-ledger-aquarium-camera') {
+    const camera = event.data.camera || {};
+    aquariumFrameCamera = {
+      x: Number(camera.x) || 0.5,
+      y: Number(camera.y) || 0.5,
+      zoom: Number(camera.zoom) || 1,
+    };
+  } else if (event.data?.type === 'life-ledger-resident-detail-request') {
+    const residentId = String(event.data.residentId || '');
+    if (residentId && aquariumState?.exists) {
+      forwardResidentDetail(residentId, frame);
+    }
+  } else if (event.data?.type === 'life-ledger-stream-status') {
+    aquariumStreamStatus = {
+      ...aquariumStreamStatus, ...(event.data.status || {}),
+    };
+    renderAquariumStatus();
+  } else if (event.data?.type === 'life-ledger-stream-refill') {
+    pullAquariumFrames(false);
+  } else if (event.data?.type === 'life-ledger-stream-resync') {
+    resetAquariumStreamCursor();
+    aquariumStreamUnavailable = false;
+    pullAquariumFrames(true);
+  }
+});
+document.getElementById('dashboard').addEventListener('load', () => {
+  const frame = document.getElementById('dashboard');
+  aquariumFrameReady = true;
+  frame.contentWindow?.postMessage({
+    type: 'life-ledger-restore-view', view: aquariumFrameView,
+  }, '*');
+  frame.contentWindow?.postMessage({
+    type: 'life-ledger-restore-aquarium-selection',
+    residentId: aquariumFrameSelection,
+  }, '*');
+  frame.contentWindow?.postMessage({
+    type: 'life-ledger-restore-aquarium-camera',
+    camera: aquariumFrameCamera,
+  }, '*');
+  postAquariumClock(frame);
+  pullAquariumFrames(true);
+  if (pendingAquariumScrollRestore) {
+    frame.contentWindow?.postMessage({
+      type: 'life-ledger-restore-scroll',
+      x: aquariumFrameScroll.x,
+      y: aquariumFrameScroll.y,
+    }, '*');
+  }
+  pendingAquariumScrollRestore = false;
+  if (pendingPageScroll) {
+    const pageScroll = pendingPageScroll;
+    pendingPageScroll = null;
+    window.requestAnimationFrame(() => window.scrollTo(pageScroll.x, pageScroll.y));
+  }
+});
+async function refreshAquariumStatus(forceView=false) {
+  try {
+    const response = await fetch('/api/aquarium/status', {cache:'no-store'});
+    if (!response.ok) throw new Error(response.statusText);
+    aquariumState = await response.json();
+    const changed = aquariumState.exists && aquariumState.revision !== aquariumRevision;
+    aquariumRevision = aquariumState.exists ? aquariumState.revision : null;
+    renderAquariumStatus();
+    if (forceView && aquariumState.exists && aquariumState.dashboard_available) {
+      showAquarium();
+    } else if (changed && aquariumState.exists && aquariumState.dashboard_available) {
+      postAquariumClock();
+      if (aquariumStreamUnavailable) showAquarium();
+      else {
+        aquariumStreamLastFetch = 0;
+        pullAquariumFrames(false);
+      }
+    } else {
+      postAquariumClock();
+    }
+  } catch (error) {
+    aquariumState = {exists:false, error:error.message}; renderAquariumStatus();
+  }
+}
+async function aquariumRequest(path, payload={}) {
+  aquariumBusy = true; aquariumButtons();
+  try {
+    const response = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.error || response.statusText);
+    aquariumState = body; aquariumRevision = body.revision;
+    renderAquariumStatus();
+    if (path === '/api/aquarium/start') {
+      resetAquariumStreamCursor();
+      aquariumStreamUnavailable = false;
+      showAquarium();
+    } else {
+      postAquariumClock();
+      aquariumStreamLastFetch = 0;
+      pullAquariumFrames(false);
+    }
+  } catch (error) { setStatus('水槽: ' + error.message, true); }
+  finally { aquariumBusy = false; aquariumButtons(); }
+}
+function makeControl(spec) {
+  const row = document.createElement('div'); row.className = 'field';
+  const label = document.createElement('label'); label.htmlFor = 'p-' + spec.key;
+  label.textContent = spec.label;
+  if (spec.description) label.title = spec.description;
+  let input;
+  if (spec.kind === 'enum') {
+    input = document.createElement('select');
+    spec.choices.forEach(choice => {
+      const option = document.createElement('option'); option.value = choice.value;
+      option.textContent = choice.label; input.appendChild(option);
+    });
+  } else {
+    input = document.createElement('input'); input.type = 'number';
+    input.min = spec.minimum; input.max = spec.maximum; input.step = spec.step;
+  }
+  input.id = 'p-' + spec.key; input.value = spec.default;
+  if (spec.description) input.title = spec.description;
+  controls.set(spec.key, {input, spec});
+  row.append(label, input); return row;
+}
+function renderForm() {
+  form.replaceChildren(); controls.clear();
+  schema.groups.forEach(group => {
+    const fs = document.createElement('fieldset');
+    const legend = document.createElement('legend'); legend.textContent = group.label;
+    fs.appendChild(legend);
+    schema.parameters.filter(p => p.group === group.key).forEach(p => fs.appendChild(makeControl(p)));
+    form.appendChild(fs);
+  });
+}
+function valuesFromForm() {
+  const values = {};
+  controls.forEach(({input, spec}, key) => {
+    values[key] = spec.kind === 'enum' ? input.value : Number(input.value);
+  });
+  return values;
+}
+function applyValues(values) {
+  controls.forEach(({input, spec}, key) => {
+    input.value = Object.hasOwn(values, key) ? values[key] : spec.default;
+  });
+}
+function download(name, text, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], {type})); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+async function run() {
+  const button = document.getElementById('run'); button.disabled = true;
+  setStatus('実行中…（同時実行は行いません）');
+  try {
+    const response = await fetch('/api/run', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({values:valuesFromForm()})});
+    if (!response.ok) {
+      let message = response.statusText;
+      try { message = (await response.json()).error || message; } catch (_) {}
+      throw new Error(message);
+    }
+    currentHtml = await response.text();
+    aquariumFrameScroll = {x: 0, y: 0, valid: false};
+    resetAquariumFrameCamera();
+    pendingAquariumScrollRestore = false;
+    document.getElementById('dashboard').srcdoc = currentHtml;
+    document.getElementById('download-html').disabled = false;
+    setStatus('完了。フォームの値はこのrunだけに適用されました。');
+  } catch (error) { setStatus(error.message, true); }
+  finally { button.disabled = false; }
+}
+document.getElementById('run').addEventListener('click', run);
+document.getElementById('reset').addEventListener('click', () => applyValues({}));
+document.getElementById('save-settings').addEventListener('click', () =>
+  download('life-game-settings.json', JSON.stringify({values:valuesFromForm()}, null, 2), 'application/json'));
+document.getElementById('load-settings').addEventListener('click', () =>
+  document.getElementById('settings-file').click());
+document.getElementById('settings-file').addEventListener('change', async event => {
+  const file = event.target.files[0]; if (!file) return;
+  try { const data = JSON.parse(await file.text()); applyValues(data.values || data); setStatus('設定を読み込みました。'); }
+  catch (error) { setStatus('設定JSONを読めません: ' + error.message, true); }
+  event.target.value = '';
+});
+document.getElementById('download-html').addEventListener('click', () => {
+  if (currentHtml) download('life_ledger_experiment.html', currentHtml, 'text/html');
+});
+document.getElementById('aquarium-start').addEventListener('click', () => {
+  const tickInput = document.getElementById('aquarium-seconds');
+  if (!tickInput.reportValidity()) return;
+  if (aquariumState && aquariumState.exists && !confirm('保存中の水槽を新しい世界で置き換えますか？')) return;
+  resetAquariumFrameCamera();
+  aquariumRequest('/api/aquarium/start', {
+    values: valuesFromForm(),
+    initial_months: Number(document.getElementById('aquarium-initial').value),
+    tick_seconds: Number(document.getElementById('aquarium-seconds').value),
+    months_per_tick: Number(document.getElementById('aquarium-months').value),
+    history_months: Number(document.getElementById('aquarium-history').value),
+  });
+});
+document.getElementById('aquarium-seconds').addEventListener('input', aquariumButtons);
+document.getElementById('aquarium-seconds').addEventListener('change', event => {
+  const minimum = Number(event.currentTarget.min) || 30;
+  if (!Number.isFinite(Number(event.currentTarget.value))
+      || Number(event.currentTarget.value) < minimum) {
+    event.currentTarget.value = String(minimum);
+  }
+  aquariumButtons();
+});
+document.getElementById('aquarium-toggle').addEventListener('click', () =>
+  aquariumRequest(aquariumState.paused ? '/api/aquarium/resume' : '/api/aquarium/pause'));
+document.getElementById('aquarium-month').addEventListener('click', () =>
+  aquariumRequest('/api/aquarium/advance', {months:1}));
+document.getElementById('aquarium-year').addEventListener('click', () =>
+  aquariumRequest('/api/aquarium/advance', {months:12}));
+document.getElementById('aquarium-view').addEventListener('click', showAquarium);
+
+fetch('/api/schema').then(r => r.json()).then(data => { schema = data; renderForm(); setStatus('準備完了'); aquariumButtons(); })
+  .catch(error => setStatus('設定スキーマを取得できません: ' + error.message, true));
+refreshAquariumStatus(true);
+setInterval(() => { if (!aquariumBusy) refreshAquariumStatus(false); }, 1000);
+</script>
+</body>
+</html>
