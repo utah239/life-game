@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "exit_code": 1,
+  "pass": 224,
+  "fail": 60,
+  "na": 107,
+  "denominator": 391,
+  "categories": {
+    "core": {"pass": 104, "fail": 1, "na": 60},
+    "bank": {"pass": 15, "fail": 15, "na": 15},
+    "currency": {"pass": 0, "fail": 0, "na": 15},
+    "local_credit": {"pass": 15, "fail": 0, "na": 0},
+    "contract_enforcement": {"pass": 44, "fail": 1, "na": 1},
+    "barter": {"pass": 31, "fail": 28, "na": 16},
+    "regime_choice_economy": {"pass": 15, "fail": 15, "na": 0}
+  }
+}
