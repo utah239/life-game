@@ -62,6 +62,9 @@ _EVENT_SIGNAL = {
     "household_goods_acquired": FRAME_SIGNAL_ACTIVITY,
     "household_goods_inherited": FRAME_SIGNAL_ACTIVITY,
     "household_goods_released": FRAME_SIGNAL_ACTIVITY,
+    "household_common_goods_accessed": FRAME_SIGNAL_ACTIVITY,
+    "household_response_changed": FRAME_SIGNAL_ACTIVITY,
+    "household_response_summary": FRAME_SIGNAL_ACTIVITY,
 }
 
 

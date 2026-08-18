@@ -269,6 +269,20 @@ def build_turns(trace_turns: list) -> list:
                 "focus_household_goods_coverage_by_good": {
                     key: round3(value) for key, value in row.get(
                         "focus_household_goods_coverage_by_good", {}).items()},
+                "focus_household_response": dict(row.get(
+                    "focus_household_response", {})),
+                "world_household_priority_counts_by_good": dict(row.get(
+                    "world_household_priority_counts_by_good", {})),
+                "world_household_priority_pressure_by_good": {
+                    key: round3(value) for key, value in row.get(
+                        "world_household_priority_pressure_by_good", {}).items()},
+                "settlement_household_priority_pressure_by_good": {
+                    settlement_id: {
+                        key: round3(value)
+                        for key, value in values.items()}
+                    for settlement_id, values in row.get(
+                        "settlement_household_priority_pressure_by_good",
+                        {}).items()},
                 "world_household_goods_holdings": {
                     key: round3(value) for key, value in row.get(
                         "world_household_goods_holdings", {}).items()},
@@ -432,7 +446,8 @@ def attach_npc_introductions(npc_rows: list, trace_npc_introductions: list) -> N
 def build_residents(registry: dict, current_turn: int,
                     focus_resident_id: str | None,
                     household_goods_state: dict | None = None,
-                    household_needs_state: dict | None = None) -> tuple[list, list]:
+                    household_needs_state: dict | None = None,
+                    household_agency_state: dict | None = None) -> tuple[list, list]:
     """永続住民台帳を、現在の住民・世帯テーブル用に整形する。"""
     household_records = registry.get("households", {}) if registry else {}
     residents = []
@@ -477,11 +492,13 @@ def build_residents(registry: dict, current_turn: int,
 
     households = []
     goods_accounts = (household_goods_state or {}).get("households", {})
+    agency_accounts = (household_agency_state or {}).get("households", {})
     needs_state = household_needs_state or {}
     for household_id, household in household_records.items():
         members = members_by_household.get(household_id, [])
         living = [row for row in members if row["alive"]]
         goods_account = goods_accounts.get(household_id, {})
+        agency_account = agency_accounts.get(household_id, {})
         households.append({
             "id": household_id,
             "name": household.get("name", household_id),
@@ -513,9 +530,19 @@ def build_residents(registry: dict, current_turn: int,
             "goods_acquired_totals": {
                 key: round3(value) for key, value in goods_account.get(
                     "acquired_totals", {}).items()},
+            "goods_common_access_totals": {
+                key: round3(value) for key, value in goods_account.get(
+                    "common_access_totals", {}).items()},
             "goods_consumed_totals": {
                 key: round3(value) for key, value in goods_account.get(
                     "consumed_totals", {}).items()},
+            "response_mode": agency_account.get("mode", "routine"),
+            "priority_good": agency_account.get("priority_good"),
+            "consecutive_shortage_months": int(agency_account.get(
+                "consecutive_shortage_months", 0)),
+            "response_shortfall_by_good": {
+                key: round3(value) for key, value in agency_account.get(
+                    "shortfall_by_good", {}).items()},
         })
     households.sort(key=lambda row: (
         not row["active"], row["settlement_id"] or "", row["id"]))
@@ -531,7 +558,8 @@ def build_observer_events(turns: list, settlements: list, npcs: list,
                           resident_events: list | None = None,
                           spatial_events: list | None = None,
                           organization_events: list | None = None,
-                          household_goods_events: list | None = None) -> list:
+                          household_goods_events: list | None = None,
+                          household_agency_events: list | None = None) -> list:
     """観察再生でその月までに起きたことだけを表示するための構造化イベント。
 
     トレースの最終状態をブラウザ側で逆算させず、Stage差分・NPC初登場・契約清算・
@@ -657,6 +685,19 @@ def build_observer_events(turns: list, settlements: list, npcs: list,
         })
         sequence += 1
 
+    # 個別世帯の全変化をobserverへ並べると大人口時に同じ月の説明だけで埋まる。
+    # 数値stateには個別優先を保持し、時系列本文は共同体別summaryだけを流す。
+    for event in household_agency_events or ():
+        if event.get("kind") != "household_response_summary":
+            continue
+        events.append({
+            "t": event["turn"], "kind": event["kind"],
+            **{key: value for key, value in event.items()
+               if key not in ("turn", "kind")},
+            "_sequence": sequence,
+        })
+        sequence += 1
+
     if death_turn is not None and not character_events:
         events.append({
             "t": death_turn, "kind": "character_died", "_sequence": sequence,
@@ -732,7 +773,8 @@ def build_dashboard_data(trace_data: dict, bin_count: int = DEFAULT_BIN_COUNT) -
         trace_data.get("resident_registry", {}), max_turn,
         trace_data.get("focus_resident_id"),
         trace_data.get("household_goods_state"),
-        trace_data.get("household_needs_state"))
+        trace_data.get("household_needs_state"),
+        trace_data.get("household_agency_state"))
     spatial_state = trace_data.get("spatial_state", {})
     particle_frame = build_particle_packet(residents, spatial_state, max_turn)
     particle_cohorts = build_particle_cohorts(
@@ -780,7 +822,8 @@ def build_dashboard_data(trace_data: dict, bin_count: int = DEFAULT_BIN_COUNT) -
         trace_data["trace"].get("resident_events"),
         spatial_state.get("cluster_events"),
         trace_data["trace"].get("organization_events"),
-        trace_data["trace"].get("household_goods_events"))
+        trace_data["trace"].get("household_goods_events"),
+        trace_data["trace"].get("household_agency_events"))
     resident_total = len(residents) + int(trace_data.get(
         "resident_registry", {}).get("archived_resident_count", 0))
     named_living_resident_count = sum(
@@ -812,6 +855,12 @@ def build_dashboard_data(trace_data: dict, bin_count: int = DEFAULT_BIN_COUNT) -
         turns[-1].get("world_common_goods_pool", {}) if turns else {})
     latest_world_organization_claims = dict(
         turns[-1].get("world_organization_goods_claims", {}) if turns else {})
+    latest_world_household_priority_counts = dict(
+        turns[-1].get(
+            "world_household_priority_counts_by_good", {}) if turns else {})
+    latest_world_household_priority_pressure = dict(
+        turns[-1].get(
+            "world_household_priority_pressure_by_good", {}) if turns else {})
     peak_population = max((int(row.get(
         "total_population", named_living_resident_count))
         for row in turns), default=latest_population)
@@ -967,6 +1016,12 @@ def build_dashboard_data(trace_data: dict, bin_count: int = DEFAULT_BIN_COUNT) -
             "world_organization_goods_claims": {
                 key: round3(value) for key, value in
                 latest_world_organization_claims.items()},
+            "world_household_priority_counts_by_good": {
+                key: int(value) for key, value in
+                latest_world_household_priority_counts.items()},
+            "world_household_priority_pressure_by_good": {
+                key: round3(value) for key, value in
+                latest_world_household_priority_pressure.items()},
             "organization_count": len(active_organization_rows),
             "organization_eligible_workforce_total": (
                 organization_labor["eligible"]),

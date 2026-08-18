@@ -303,6 +303,10 @@ def _summary(checkpoint: dict, history_months: int) -> dict:
             focus_household_id, {}).get("holdings", {}))
     focus_household_goods_coverage = household_goods_coverage(
         household_goods_state, needs_state, focus_household_id)
+    household_agency_state = checkpoint.get("household_agency_state", {})
+    focus_household_response = dict(
+        household_agency_state.get("households", {}).get(
+            focus_household_id, {}))
     household_activity_total = sum(
         int(row.get("activity_count", 0))
         for row in registry.get("households", {}).values())
@@ -370,6 +374,13 @@ def _summary(checkpoint: dict, history_months: int) -> dict:
         "focus_household_goods": focus_household_goods,
         "focus_household_goods_coverage_by_good": (
             focus_household_goods_coverage),
+        "focus_household_response": focus_household_response,
+        "world_household_priority_counts_by_good": dict(
+            household_agency_state.get(
+                "world_priority_household_counts_by_good", {})),
+        "world_household_priority_pressure_by_good": dict(
+            household_agency_state.get(
+                "world_priority_pressure_by_good", {})),
         "world_household_goods_holdings": dict(
             household_goods_state.get("world_household_holdings", {})),
         "world_anonymous_goods_holdings": dict(

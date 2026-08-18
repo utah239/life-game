@@ -795,6 +795,14 @@ class AquariumManagerTest(unittest.TestCase):
             detail["resident"]["household_id"])
         self.assertEqual(detail["turn"], 2)
         self.assertEqual(detail["revision"], 1)
+        self.assertEqual(
+            detail["household_goods"],
+            world["checkpoint"]["household_goods_state"]["households"][
+                detail["resident"]["household_id"]])
+        self.assertEqual(
+            detail["household_response"],
+            world["checkpoint"]["household_agency_state"]["households"][
+                detail["resident"]["household_id"]])
         self.assertIsNotNone(detail["position"])
         self.assertIsNotNone(detail["site"])
         self.assertIn(

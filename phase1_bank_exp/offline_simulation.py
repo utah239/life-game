@@ -82,6 +82,14 @@ from institutions.household_goods import (
     upgrade_household_goods_state,
     verify_household_goods_state,
 )
+from institutions.household_agency import (
+    community_priority_pressure,
+    household_priority_by_id,
+    initial_household_agency_state,
+    plan_household_agency,
+    upgrade_household_agency_state,
+    verify_household_agency_state,
+)
 from institutions.activity_communities import (
     ACTIVITY_COMMUNITY_ACCOUNTING_VERSION,
     build_activity_community_ledger,
@@ -534,6 +542,9 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
         household_goods_state = upgrade_household_goods_state(state.get(
             "household_goods_state", initial_household_goods_state(
                 int(state.get("completed_turn", 0)))))
+        household_agency_state = upgrade_household_agency_state(state.get(
+            "household_agency_state", initial_household_agency_state(
+                int(state.get("completed_turn", 0)))))
         focus_resident_id = state.get("focus_resident_id")
         population_tracking = state["population_tracking"]
         generation = state["generation"]
@@ -613,6 +624,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
         activity_economy_state = initial_activity_economy_state()
         organization_state = initial_organization_state()
         household_goods_state = initial_household_goods_state()
+        household_agency_state = initial_household_agency_state()
         focus_resident_id = (select_focus_resident(
             resident_registry, focus_settlement_id, 1)
             if continue_world else None)
@@ -792,10 +804,19 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
 
     if continue_world:
         _refresh_household_needs(max(0, start_turn - 1))
-        household_goods_state = reconcile_household_goods_state(
-            household_goods_state, settlements, resident_registry,
-            household_needs_state, organization_state,
-            max(0, start_turn - 1))["state"]
+        if (not verify_household_goods_state(
+                household_goods_state, settlements, resident_registry,
+                household_needs_state, organization_state)
+                or not verify_household_agency_state(
+                    household_agency_state, household_goods_state,
+                    household_needs_state)):
+            initial_agency = plan_household_agency(
+                household_agency_state, household_goods_state, settlements,
+                resident_registry, household_needs_state, organization_state,
+                max(0, start_turn - 1))
+            household_agency_state = initial_agency["state"]
+            household_goods_state = initial_agency[
+                "household_goods_state"]
         # 初期昇格直後の台帳にも新しい需要参照を反映する。
         activity_community_ledger = build_activity_community_ledger(
             spatial_state, resident_registry, settlements,
@@ -888,20 +909,24 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             trace.setdefault("household_goods_events", []).extend(
                 copy.deepcopy(events))
 
-    def _sync_household_goods_accounts() -> None:
-        """共同体昇格・組織改組後のIDとclaim上限へ世帯内訳を合わせる。"""
-        nonlocal household_goods_state
+    def _record_household_agency_events(events: list[dict]) -> None:
+        if trace is not None and events:
+            trace.setdefault("household_agency_events", []).extend(
+                copy.deepcopy(events))
+
+    def _sync_household_agency() -> None:
+        """確定済みの財内訳から、共用アクセスと次月の世帯対応を決める。"""
+        nonlocal household_agency_state, household_goods_state
         if not continue_world:
             return
-        if verify_household_goods_state(
-                household_goods_state, settlements, resident_registry,
-                household_needs_state, organization_state):
-            return
-        reconciled = reconcile_household_goods_state(
-            household_goods_state, settlements, resident_registry,
-            household_needs_state, organization_state, turn)
-        household_goods_state = reconciled["state"]
-        _record_household_goods_events(reconciled["events"])
+        planned = plan_household_agency(
+            household_agency_state, household_goods_state, settlements,
+            resident_registry, household_needs_state, organization_state,
+            turn)
+        household_agency_state = planned["state"]
+        household_goods_state = planned["household_goods_state"]
+        _record_household_goods_events(planned["household_goods_events"])
+        _record_household_agency_events(planned["events"])
 
     def _apply_previous_organization_effects() -> dict:
         """前月末の組織が生む協調余剰を今月へ1回だけ適用する。"""
@@ -1073,6 +1098,9 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             focus_household_goods_coverage = household_goods_coverage(
                 household_goods_state, household_needs_state,
                 focus_household_id)
+            focus_household_response = dict(
+                household_agency_state.get("households", {}).get(
+                    focus_household_id, {}))
             personal_turn = max(1, turn - generation_started_turn + 1)
             snapshot.update({
                 "settlement_id": focus_settlement_id,
@@ -1173,6 +1201,17 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                 "focus_household_goods": focus_household_goods,
                 "focus_household_goods_coverage_by_good": (
                     focus_household_goods_coverage),
+                "focus_household_response": focus_household_response,
+                "world_household_priority_counts_by_good": dict(
+                    household_agency_state.get(
+                        "world_priority_household_counts_by_good", {})),
+                "world_household_priority_pressure_by_good": dict(
+                    household_agency_state.get(
+                        "world_priority_pressure_by_good", {})),
+                "settlement_household_priority_pressure_by_good": {
+                    sid: dict(row.get("priority_pressure_by_good", {}))
+                    for sid, row in household_agency_state.get(
+                        "communities", {}).items()},
                 "world_household_goods_holdings": dict(
                     household_goods_state.get(
                         "world_household_holdings", {})),
@@ -1343,6 +1382,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
         trace.setdefault("organization_events", [])
         trace.setdefault("organization_effects", [])
         trace.setdefault("household_goods_events", [])
+        trace.setdefault("household_agency_events", [])
 
     def _record_current_turn_once() -> None:
         """世代交代/世界終端で通常のloop末尾へ到達しないターンを1回記録する。"""
@@ -1350,7 +1390,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             _sync_focus_economy()
             _sync_spatial_state()
             _sync_organizations()
-            _sync_household_goods_accounts()
+            _sync_household_agency()
         if turn in checkpoint_turns:
             settlement_counts_by_checkpoint[turn] = dict(settlement_outcome_counts)
             trajectory[turn] = _snapshot()
@@ -1637,7 +1677,9 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                 "food": food, "medicine": medicine,
                 "shelter": shelter, "tools": tools},
             provisioning_scale=focus_provisioning_scale,
-            demand_scales_by_good=focus_demand_scales)
+            demand_scales_by_good=focus_demand_scales,
+            household_pressure_by_good=community_priority_pressure(
+                household_agency_state, focus_settlement_id))
             if continue_world else None)
         focus_productivity_factors = (
             production_productivity_factors(
@@ -1726,7 +1768,9 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                             good: economy.get(good, 0.0)
                             for good in ("food", "medicine", "shelter", "tools")},
                         provisioning_scale=local_provisioning_scale,
-                        demand_scales_by_good=local_demand_scales)
+                        demand_scales_by_good=local_demand_scales,
+                        household_pressure_by_good=community_priority_pressure(
+                            household_agency_state, settlement_id))
                     local_upkeep = deps.plan_barter_upkeep_fn(
                         economy["food"], economy["medicine"], economy["shelter"],
                         economy["tools"], economy["production_capacity"],
@@ -1779,7 +1823,9 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             activity_plan = plan_activity_economy(
                 activity_economy_state, resident_registry, spatial_state,
                 settlements, gross_production_by_community, turn,
-                labor_plans_by_community=labor_plans_by_community)
+                labor_plans_by_community=labor_plans_by_community,
+                household_priorities=household_priority_by_id(
+                    household_agency_state))
             activity_economy_state = activity_plan["state"]
             resident_registry = activity_plan["registry"]
             # 月初時点の経験倍率で今月の生産を確定した後、実際の財別実働から
@@ -2461,7 +2507,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             # 確定してから、永続空間をちょうど1回だけ進める。
             _sync_spatial_state()
             _sync_organizations()
-            _sync_household_goods_accounts()
+            _sync_household_agency()
         if turn in checkpoint_turns:
             settlement_counts_by_checkpoint[turn] = dict(settlement_outcome_counts)
             # 2026-08-16(可視化ダッシュボード用trace追加時のリファクタリング):
@@ -2589,6 +2635,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             "organization_state": organization_state,
             "household_needs_state": household_needs_state,
             "household_goods_state": household_goods_state,
+            "household_agency_state": household_agency_state,
             "focus_resident_id": focus_resident_id,
             "population_stage": population_stage,
             "population_tracking": population_tracking,
@@ -2631,6 +2678,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             "organization_state": organization_state,
             "household_needs_state": household_needs_state,
             "household_goods_state": household_goods_state,
+            "household_agency_state": household_agency_state,
             "focus_resident_id": focus_resident_id,
             "population_stage": population_stage,
             "generation": generation,
@@ -3339,7 +3387,8 @@ def collect_visualize_trace(seed: int, policy_name: str, turns: int, safety_floo
                  "population_events": [], "trade_events": [],
                  "resident_events": [], "spatial_keyframes": [],
                  "organization_events": [], "organization_effects": [],
-                 "household_goods_events": []}
+                 "household_goods_events": [],
+                 "household_agency_events": []}
     else:
         # 永続水槽は過去のtraceへ今回区間を追記する。呼び出し側が古いschemaの
         # traceを渡しても、追加済みのイベントstreamだけ安全に補う。
@@ -3347,7 +3396,7 @@ def collect_visualize_trace(seed: int, policy_name: str, turns: int, safety_floo
                      "npc_events", "character_events", "population_events",
                      "trade_events", "resident_events", "spatial_keyframes",
                      "organization_events", "organization_effects",
-                     "household_goods_events"):
+                     "household_goods_events", "household_agency_events"):
             trace.setdefault(name, [])
     resume_kwargs = ({"resume_state": resume_state}
                      if resume_state is not None else {})
@@ -3418,6 +3467,8 @@ def collect_visualize_trace(seed: int, policy_name: str, turns: int, safety_floo
                 "household_needs_state", {}),
             "household_goods_state": r.get(
                 "household_goods_state", initial_household_goods_state()),
+            "household_agency_state": r.get(
+                "household_agency_state", initial_household_agency_state()),
             "focus_resident_id": r.get("focus_resident_id"),
         })
         focus_id = r.get("focus_settlement_id", HOME_SETTLEMENT_ID)
