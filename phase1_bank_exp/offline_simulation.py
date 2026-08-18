@@ -813,7 +813,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             initial_agency = plan_household_agency(
                 household_agency_state, household_goods_state, settlements,
                 resident_registry, household_needs_state, organization_state,
-                max(0, start_turn - 1))
+                max(0, start_turn - 1), barter_active=barter_active)
             household_agency_state = initial_agency["state"]
             household_goods_state = initial_agency[
                 "household_goods_state"]
@@ -922,7 +922,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
         planned = plan_household_agency(
             household_agency_state, household_goods_state, settlements,
             resident_registry, household_needs_state, organization_state,
-            turn)
+            turn, barter_active=barter_active)
         household_agency_state = planned["state"]
         household_goods_state = planned["household_goods_state"]
         _record_household_goods_events(planned["household_goods_events"])
@@ -1223,6 +1223,12 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                 "world_organization_goods_claims": dict(
                     household_goods_state.get(
                         "world_organization_claims", {})),
+                "world_household_barter_volume_by_good": dict(
+                    household_goods_state.get(
+                        "world_household_barter_volume_by_good", {})),
+                "world_household_barter_exchange_count": int(
+                    household_goods_state.get(
+                        "world_household_barter_exchange_count", 0)),
                 "living_resident_count": living_population_count(
                     resident_registry),
                 "named_living_resident_count": len(living_residents(
@@ -1968,6 +1974,12 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             # 出生・死亡・移住後の人口/年齢構成を同月の行動評価と表示へ反映。
             # 移住は需要を人と一緒に動かすだけなので世界需要合計を変えない。
             _refresh_household_needs(turn)
+            # 集落間交易で物理在庫が減った送り手では、月初に有効だった組織claimが
+            # 現在在庫を上回り得る。世帯claimを現在在庫へ合わせるより先に、同じ
+            # 内訳である組織claimも比例縮小する。財自体は交易ですでに移動済みで、
+            # ここでは所有内訳だけを更新する。
+            organization_state = reconcile_organization_state_asset_claims(
+                organization_state, settlements)
             lifecycle_kinds = {
                 event.get("kind") for event in resident_lifecycle_events}
             if lifecycle_kinds & {
@@ -1976,9 +1988,13 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                 household_lifecycle = plan_household_goods_lifecycle(
                     household_goods_state, settlements, resident_registry,
                     household_needs_state, organization_state,
-                    resident_lifecycle_events, turn)
+                    resident_lifecycle_events, turn,
+                    reconcile_organization_state_fn=(
+                        reconcile_organization_state_asset_claims))
                 household_goods_state = household_lifecycle["state"]
                 settlements = household_lifecycle["settlements"]
+                organization_state = household_lifecycle[
+                    "organization_state"]
                 _record_household_goods_events(
                     household_lifecycle["events"])
             else:
