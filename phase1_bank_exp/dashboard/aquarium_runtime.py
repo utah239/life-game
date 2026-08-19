@@ -684,6 +684,13 @@ class AquariumManager:
             raise KeyError(resident_id)
         household = registry.get("households", {}).get(
             resident.get("household_id"))
+        household_id = str(resident.get("household_id") or "")
+        household_goods = checkpoint.get(
+            "household_goods_state", {}).get(
+                "households", {}).get(household_id)
+        household_response = checkpoint.get(
+            "household_agency_state", {}).get(
+                "households", {}).get(household_id)
         spatial = checkpoint.get("spatial_state", {})
         position = spatial.get("residents", {}).get(resident_id)
         site = (spatial.get("sites", {}).get(position.get("site_id"))
@@ -728,6 +735,8 @@ class AquariumManager:
                 "parent_ids": list(resident.get("parent_ids", ())),
             },
             "household": dict(household) if household else None,
+            "household_goods": copy.deepcopy(household_goods),
+            "household_response": copy.deepcopy(household_response),
             "position": dict(position) if position else None,
             "site": dict(site) if site else None,
             "activity_community_id": cluster_id,

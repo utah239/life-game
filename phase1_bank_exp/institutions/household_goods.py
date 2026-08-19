@@ -53,6 +53,7 @@ def _account_record(account_id: str, settlement_id: str, *,
         "settlement_id": str(settlement_id),
         "holdings": _zero_goods(),
         "acquired_totals": _zero_goods(),
+        "common_access_totals": _zero_goods(),
         "consumed_totals": _zero_goods(),
         "inherited_totals": _zero_goods(),
         "migrated_sent_totals": _zero_goods(),
@@ -97,7 +98,8 @@ def upgrade_household_goods_state(state: dict | None) -> dict:
         row["household_id"] = str(household_id)
         row["settlement_id"] = str(row.get("settlement_id", ""))
         for field in (
-                "holdings", "acquired_totals", "consumed_totals",
+                "holdings", "acquired_totals", "common_access_totals",
+                "consumed_totals",
                 "inherited_totals", "migrated_sent_totals",
                 "migrated_received_totals"):
             row[field] = _goods(row.get(field))
@@ -105,7 +107,8 @@ def upgrade_household_goods_state(state: dict | None) -> dict:
         row["settlement_id"] = str(settlement_id)
         row["population"] = max(0, int(row.get("population", 0)))
         for field in (
-                "holdings", "acquired_totals", "consumed_totals",
+                "holdings", "acquired_totals", "common_access_totals",
+                "consumed_totals",
                 "migrated_sent_totals", "migrated_received_totals"):
             row[field] = _goods(row.get(field))
     for field in (
