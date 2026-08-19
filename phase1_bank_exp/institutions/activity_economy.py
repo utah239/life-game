@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 
 from institutions import barter
+from institutions.household_agency import HOUSEHOLD_SHORTAGE_LABOR_PRIORITY
 from institutions.population import PRODUCTIVE_AGE_RANGE
 from institutions.residents import (
     HOUSEHOLD_LIVELIHOODS,
@@ -114,7 +115,8 @@ def background_production_labor_plan(
         population: int, productive_population: int,
         goods: dict | None = None,
         provisioning_scale: float = 1.0,
-        demand_scales_by_good: dict | None = None) -> dict:
+        demand_scales_by_good: dict | None = None,
+        household_pressure_by_good: dict | None = None) -> dict:
     """必需財背景生産の財別必要人数・実働人数・充足率を返す。
 
     必要人数の総計は従来どおり共同体人口の明示比率から求める。その人数を
@@ -141,8 +143,11 @@ def background_production_labor_plan(
         current = max(0.0, float(goods.get(good, reference)))
         shortfall = (max(0.0, min(1.0, (reference - current) / reference))
                      if reference > 0.0 else 0.0)
+        household_pressure = max(0.0, min(1.0, float(
+            (household_pressure_by_good or {}).get(good, 0.0))))
         urgency[good] = required_by_good[good] * (
-            1.0 + shortfall * ESSENTIAL_LABOR_SHORTAGE_PRIORITY)
+            1.0 + shortfall * ESSENTIAL_LABOR_SHORTAGE_PRIORITY
+            + household_pressure * HOUSEHOLD_SHORTAGE_LABOR_PRIORITY)
     active_by_good = _allocate_capped_integer(
         active_workers, urgency, required_by_good)
     factors_by_good = {
@@ -270,13 +275,18 @@ def _productive_residents_by_community(registry: dict,
 
 def _pick_named_workers(registry: dict, candidates_by_community: dict,
                         community_id: str, good: str,
-                        count: int, used: set[str]) -> list[dict]:
+                        count: int, used: set[str],
+                        household_priorities: dict | None = None) -> list[dict]:
     households = registry.get("households", {})
     candidates = [
         resident for resident in candidates_by_community.get(
             community_id, ())
         if resident["id"] not in used]
     candidates.sort(key=lambda resident: (
+        0 if (household_priorities or {}).get(
+            str(resident.get("household_id"))) == good else
+        1 if str(resident.get("household_id")) not in (
+            household_priorities or {}) else 2,
         households.get(resident.get("household_id"), {}).get(
             "livelihood") != good,
         int(resident.get("activity_count", 0)),
@@ -367,7 +377,8 @@ def plan_activity_economy(state: dict | None, registry: dict,
                           spatial_state: dict, settlements: dict,
                           gross_production_by_community: dict,
                           turn: int,
-                          labor_plans_by_community: dict | None = None) -> dict:
+                          labor_plans_by_community: dict | None = None,
+                          household_priorities: dict | None = None) -> dict:
     """1か月のgross背景生産を活動主体へ保存配賦する。
 
     財在庫やsettlementは変更しない。戻り値のregistryだけが名前付き住民と
@@ -457,9 +468,13 @@ def plan_activity_economy(state: dict | None, registry: dict,
             named_workers = _pick_named_workers(
                 after_registry, candidates_by_community,
                 community_id, good,
-                worker_count, used_named_workers)
+                worker_count, used_named_workers,
+                household_priorities)
             household_ids = _record_named_activity(
                 after_registry, named_workers, good, turn)
+            responding_household_ids = sorted(
+                household_id for household_id in household_ids
+                if (household_priorities or {}).get(household_id) == good)
             anonymous_workers = max(0, worker_count - len(named_workers))
             site_allocations = _site_allocations(
                 sites, site_by_household, named_workers,
@@ -472,6 +487,7 @@ def plan_activity_economy(state: dict | None, registry: dict,
                 "worker_count": worker_count,
                 "named_worker_ids": [row["id"] for row in named_workers],
                 "named_household_ids": household_ids,
+                "responding_household_ids": responding_household_ids,
                 "anonymous_worker_count": anonymous_workers,
                 "site_allocations": site_allocations,
                 # compact済みの無人共同体など、既知siteすら残らない場合だけ
@@ -488,6 +504,8 @@ def plan_activity_economy(state: dict | None, registry: dict,
                     "worker_count": worker_count,
                     "named_worker_count": len(named_workers),
                     "anonymous_worker_count": anonymous_workers,
+                    "responding_household_count": len(
+                        responding_household_ids),
                     "site_count": len(site_allocations),
                 }
                 if named_workers:

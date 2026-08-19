@@ -27,6 +27,7 @@ from dashboard.experiment_parameters import (  # noqa: E402
     validate_request,
 )
 from institutions import barter  # noqa: E402
+from institutions.household_goods import household_goods_coverage  # noqa: E402
 from institutions.production_practice import (  # noqa: E402
     normalize_production_practice,
     population_weighted_production_practice,
@@ -295,6 +296,17 @@ def _summary(checkpoint: dict, history_months: int) -> dict:
         focus_resident_id, {})
     focus_household = registry.get("households", {}).get(
         focus_resident.get("household_id"), {})
+    household_goods_state = checkpoint.get("household_goods_state", {})
+    focus_household_id = str(focus_resident.get("household_id") or "")
+    focus_household_goods = dict(
+        household_goods_state.get("households", {}).get(
+            focus_household_id, {}).get("holdings", {}))
+    focus_household_goods_coverage = household_goods_coverage(
+        household_goods_state, needs_state, focus_household_id)
+    household_agency_state = checkpoint.get("household_agency_state", {})
+    focus_household_response = dict(
+        household_agency_state.get("households", {}).get(
+            focus_household_id, {}))
     household_activity_total = sum(
         int(row.get("activity_count", 0))
         for row in registry.get("households", {}).values())
@@ -359,6 +371,24 @@ def _summary(checkpoint: dict, history_months: int) -> dict:
         "world_demand_quantities_by_good": world_demand_quantities,
         "world_goods_totals": world_goods,
         "world_goods_coverage_by_good": world_coverage,
+        "focus_household_goods": focus_household_goods,
+        "focus_household_goods_coverage_by_good": (
+            focus_household_goods_coverage),
+        "focus_household_response": focus_household_response,
+        "world_household_priority_counts_by_good": dict(
+            household_agency_state.get(
+                "world_priority_household_counts_by_good", {})),
+        "world_household_priority_pressure_by_good": dict(
+            household_agency_state.get(
+                "world_priority_pressure_by_good", {})),
+        "world_household_goods_holdings": dict(
+            household_goods_state.get("world_household_holdings", {})),
+        "world_anonymous_goods_holdings": dict(
+            household_goods_state.get("world_anonymous_holdings", {})),
+        "world_common_goods_pool": dict(
+            household_goods_state.get("world_common_pool", {})),
+        "world_organization_goods_claims": dict(
+            household_goods_state.get("world_organization_claims", {})),
         "production_practice_by_good": focus_practice,
         "production_productivity_factors_by_good": (
             production_productivity_factors(focus_practice)),

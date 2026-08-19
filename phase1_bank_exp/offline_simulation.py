@@ -72,6 +72,24 @@ from institutions.settlement_network import (
 )
 from institutions.intersettlement_trade import plan_intersettlement_trade
 from institutions.household_needs import build_household_needs_state
+from institutions.household_goods import (
+    credit_household_action_goods,
+    household_goods_coverage,
+    initial_household_goods_state,
+    plan_household_goods_lifecycle,
+    plan_household_goods_provisioning,
+    reconcile_household_goods_state,
+    upgrade_household_goods_state,
+    verify_household_goods_state,
+)
+from institutions.household_agency import (
+    community_priority_pressure,
+    household_priority_by_id,
+    initial_household_agency_state,
+    plan_household_agency,
+    upgrade_household_agency_state,
+    verify_household_agency_state,
+)
 from institutions.activity_communities import (
     ACTIVITY_COMMUNITY_ACCOUNTING_VERSION,
     build_activity_community_ledger,
@@ -521,6 +539,12 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             "activity_economy_state", initial_activity_economy_state())
         organization_state = upgrade_organization_state(state.get(
             "organization_state", initial_organization_state()))
+        household_goods_state = upgrade_household_goods_state(state.get(
+            "household_goods_state", initial_household_goods_state(
+                int(state.get("completed_turn", 0)))))
+        household_agency_state = upgrade_household_agency_state(state.get(
+            "household_agency_state", initial_household_agency_state(
+                int(state.get("completed_turn", 0)))))
         focus_resident_id = state.get("focus_resident_id")
         population_tracking = state["population_tracking"]
         generation = state["generation"]
@@ -599,6 +623,8 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
         activity_community_accounting_version = 0
         activity_economy_state = initial_activity_economy_state()
         organization_state = initial_organization_state()
+        household_goods_state = initial_household_goods_state()
+        household_agency_state = initial_household_agency_state()
         focus_resident_id = (select_focus_resident(
             resident_registry, focus_settlement_id, 1)
             if continue_world else None)
@@ -755,6 +781,12 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
         community_trust = focus_economy["community_trust"]
         local_credit_stage = focus_economy["local_credit_stage"]
 
+        # 旧checkpointの活動共同体IDが初回昇格で置き換わった場合、次の月次
+        # organization planより先に世帯財台帳が現在在庫を読む。存在しない旧IDの
+        # claimだけをここで解放し、物理財を失わず共用分として受け入れられるようにする。
+        organization_state = reconcile_organization_state_asset_claims(
+            organization_state, settlements)
+
     household_needs_state = None
 
     def _refresh_household_needs(updated_turn: int) -> None:
@@ -772,6 +804,19 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
 
     if continue_world:
         _refresh_household_needs(max(0, start_turn - 1))
+        if (not verify_household_goods_state(
+                household_goods_state, settlements, resident_registry,
+                household_needs_state, organization_state)
+                or not verify_household_agency_state(
+                    household_agency_state, household_goods_state,
+                    household_needs_state)):
+            initial_agency = plan_household_agency(
+                household_agency_state, household_goods_state, settlements,
+                resident_registry, household_needs_state, organization_state,
+                max(0, start_turn - 1))
+            household_agency_state = initial_agency["state"]
+            household_goods_state = initial_agency[
+                "household_goods_state"]
         # 初期昇格直後の台帳にも新しい需要参照を反映する。
         activity_community_ledger = build_activity_community_ledger(
             spatial_state, resident_registry, settlements,
@@ -858,6 +903,30 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
         if trace is not None:
             trace["organization_events"].extend(
                 organization_state.get("events", ())[previous_event_count:])
+
+    def _record_household_goods_events(events: list[dict]) -> None:
+        if trace is not None and events:
+            trace.setdefault("household_goods_events", []).extend(
+                copy.deepcopy(events))
+
+    def _record_household_agency_events(events: list[dict]) -> None:
+        if trace is not None and events:
+            trace.setdefault("household_agency_events", []).extend(
+                copy.deepcopy(events))
+
+    def _sync_household_agency() -> None:
+        """確定済みの財内訳から、共用アクセスと次月の世帯対応を決める。"""
+        nonlocal household_agency_state, household_goods_state
+        if not continue_world:
+            return
+        planned = plan_household_agency(
+            household_agency_state, household_goods_state, settlements,
+            resident_registry, household_needs_state, organization_state,
+            turn)
+        household_agency_state = planned["state"]
+        household_goods_state = planned["household_goods_state"]
+        _record_household_goods_events(planned["household_goods_events"])
+        _record_household_agency_events(planned["events"])
 
     def _apply_previous_organization_effects() -> dict:
         """前月末の組織が生む協調余剰を今月へ1回だけ適用する。"""
@@ -1021,6 +1090,17 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                 focus_resident_id, {})
             focus_household = resident_registry["households"].get(
                 focus_resident.get("household_id"), {})
+            focus_household_id = str(
+                focus_resident.get("household_id") or "")
+            focus_household_goods = dict(
+                household_goods_state.get("households", {}).get(
+                    focus_household_id, {}).get("holdings", {}))
+            focus_household_goods_coverage = household_goods_coverage(
+                household_goods_state, household_needs_state,
+                focus_household_id)
+            focus_household_response = dict(
+                household_agency_state.get("households", {}).get(
+                    focus_household_id, {}))
             personal_turn = max(1, turn - generation_started_turn + 1)
             snapshot.update({
                 "settlement_id": focus_settlement_id,
@@ -1118,6 +1198,31 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                     focus_resident, turn) if focus_resident else None),
                 "focus_household_id": focus_resident.get("household_id"),
                 "focus_household_name": focus_household.get("name"),
+                "focus_household_goods": focus_household_goods,
+                "focus_household_goods_coverage_by_good": (
+                    focus_household_goods_coverage),
+                "focus_household_response": focus_household_response,
+                "world_household_priority_counts_by_good": dict(
+                    household_agency_state.get(
+                        "world_priority_household_counts_by_good", {})),
+                "world_household_priority_pressure_by_good": dict(
+                    household_agency_state.get(
+                        "world_priority_pressure_by_good", {})),
+                "settlement_household_priority_pressure_by_good": {
+                    sid: dict(row.get("priority_pressure_by_good", {}))
+                    for sid, row in household_agency_state.get(
+                        "communities", {}).items()},
+                "world_household_goods_holdings": dict(
+                    household_goods_state.get(
+                        "world_household_holdings", {})),
+                "world_anonymous_goods_holdings": dict(
+                    household_goods_state.get(
+                        "world_anonymous_holdings", {})),
+                "world_common_goods_pool": dict(
+                    household_goods_state.get("world_common_pool", {})),
+                "world_organization_goods_claims": dict(
+                    household_goods_state.get(
+                        "world_organization_claims", {})),
                 "living_resident_count": living_population_count(
                     resident_registry),
                 "named_living_resident_count": len(living_residents(
@@ -1276,6 +1381,8 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
         trace.setdefault("spatial_keyframes", [])
         trace.setdefault("organization_events", [])
         trace.setdefault("organization_effects", [])
+        trace.setdefault("household_goods_events", [])
+        trace.setdefault("household_agency_events", [])
 
     def _record_current_turn_once() -> None:
         """世代交代/世界終端で通常のloop末尾へ到達しないターンを1回記録する。"""
@@ -1283,6 +1390,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             _sync_focus_economy()
             _sync_spatial_state()
             _sync_organizations()
+            _sync_household_agency()
         if turn in checkpoint_turns:
             settlement_counts_by_checkpoint[turn] = dict(settlement_outcome_counts)
             trajectory[turn] = _snapshot()
@@ -1299,6 +1407,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
         nonlocal character_alive, character_death_count, death_turn
         nonlocal population_stage, world_extinct_turn, focus_settlement_id
         nonlocal resident_registry, focus_resident_id
+        nonlocal household_goods_state, settlements
 
         _sync_focus_economy()
         character_alive = False
@@ -1324,6 +1433,25 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             resident_death_events = resident_death["events"]
             if trace is not None:
                 trace["resident_events"].extend(resident_death_events)
+        # 焦点人物の死亡は通常の人口upkeep経路を通らない。空世帯の相続・
+        # 共用返還を記録前に確定し、死亡月のsnapshotと再開stateを一致させる。
+        _refresh_household_needs(turn)
+        if any(event.get("kind") == "household_closed"
+               for event in resident_death_events):
+            household_lifecycle = plan_household_goods_lifecycle(
+                household_goods_state, settlements, resident_registry,
+                household_needs_state, organization_state,
+                resident_death_events, turn)
+            household_goods_state = household_lifecycle["state"]
+            settlements = household_lifecycle["settlements"]
+            _record_household_goods_events(household_lifecycle["events"])
+        else:
+            reconciled = reconcile_household_goods_state(
+                household_goods_state, settlements, resident_registry,
+                household_needs_state, organization_state, turn)
+            household_goods_state = reconciled["state"]
+            _record_household_goods_events(reconciled["events"])
+        _load_focus_economy()
         living_stages = [
             row["stage"] for row in settlements.values()
             if row["population"] > 0]
@@ -1429,6 +1557,14 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
         last_completed_turn = turn
         gross_production_by_community = {}
         labor_plans_by_community = {}
+        upkeep_plans_by_community = {}
+        goods_before_by_community = ({
+            settlement_id: {
+                good: float(settlement["local_economy"].get(good, 0.0))
+                for good in ("food", "medicine", "shelter", "tools")}
+            for settlement_id, settlement in settlements.items()
+        } if continue_world else {})
+        resident_lifecycle_events = []
         # decay は「このターン開始時点(regen/income適用前)の残高」を見る
         # (main() 側・simulate_money.py の検証モデルと同じ順序にするため)。
         resources_before = dict(resources)
@@ -1541,7 +1677,9 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                 "food": food, "medicine": medicine,
                 "shelter": shelter, "tools": tools},
             provisioning_scale=focus_provisioning_scale,
-            demand_scales_by_good=focus_demand_scales)
+            demand_scales_by_good=focus_demand_scales,
+            household_pressure_by_good=community_priority_pressure(
+                household_agency_state, focus_settlement_id))
             if continue_world else None)
         focus_productivity_factors = (
             production_productivity_factors(
@@ -1560,6 +1698,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             demand_scales_by_good=focus_demand_scales)
         if continue_world:
             labor_plans_by_community[focus_settlement_id] = focus_labor_plan
+            upkeep_plans_by_community[focus_settlement_id] = barter_upkeep
             gross_production_by_community[focus_settlement_id] = (
                 _gross_production_from_upkeep(barter_upkeep))
         food = barter_upkeep["food_after"]
@@ -1629,7 +1768,9 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                             good: economy.get(good, 0.0)
                             for good in ("food", "medicine", "shelter", "tools")},
                         provisioning_scale=local_provisioning_scale,
-                        demand_scales_by_good=local_demand_scales)
+                        demand_scales_by_good=local_demand_scales,
+                        household_pressure_by_good=community_priority_pressure(
+                            household_agency_state, settlement_id))
                     local_upkeep = deps.plan_barter_upkeep_fn(
                         economy["food"], economy["medicine"], economy["shelter"],
                         economy["tools"], economy["production_capacity"],
@@ -1644,6 +1785,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                         provisioning_scale=local_provisioning_scale,
                         demand_scales_by_good=local_demand_scales)
                     labor_plans_by_community[settlement_id] = local_labor_plan
+                    upkeep_plans_by_community[settlement_id] = local_upkeep
                     gross_production_by_community[settlement_id] = (
                         _gross_production_from_upkeep(local_upkeep))
                     economy.update({
@@ -1681,7 +1823,9 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             activity_plan = plan_activity_economy(
                 activity_economy_state, resident_registry, spatial_state,
                 settlements, gross_production_by_community, turn,
-                labor_plans_by_community=labor_plans_by_community)
+                labor_plans_by_community=labor_plans_by_community,
+                household_priorities=household_priority_by_id(
+                    household_agency_state))
             activity_economy_state = activity_plan["state"]
             resident_registry = activity_plan["registry"]
             # 月初時点の経験倍率で今月の生産を確定した後、実際の財別実働から
@@ -1697,6 +1841,15 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                     labor_plan["active_worker_count_by_good"])
                 economy["production_practice_by_good"] = (
                     practice_plan["practice_after_by_good"])
+            household_provisioning = plan_household_goods_provisioning(
+                household_goods_state, settlements, resident_registry,
+                household_needs_state, organization_state,
+                activity_economy_state, spatial_state,
+                goods_before_by_community, upkeep_plans_by_community, turn,
+                finalize=False)
+            household_goods_state = household_provisioning["state"]
+            _record_household_goods_events(
+                household_provisioning["events"])
             if trace is not None:
                 trace["resident_events"].extend(activity_plan["events"])
 
@@ -1709,7 +1862,6 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             trade_event_count += len(trade["events"])
             if trace is not None:
                 trace["trade_events"].extend(trade["events"])
-
             # 交易後の在庫で、各集落の物々交換Stage・不足実害・人口変化を
             # 1回だけ確定する。
             for settlement_id, settlement in list(settlements.items()):
@@ -1760,6 +1912,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                     population_plan["births"], population_plan["deaths"], turn,
                     protected_resident_ids=(focus_resident_id,))
                 resident_registry = resident_plan["registry"]
+                resident_lifecycle_events.extend(resident_plan["events"])
                 if trace is not None:
                     trace["resident_events"].extend(resident_plan["events"])
                 if trace is not None and (
@@ -1801,6 +1954,8 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                     resident_registry, migration_event, turn,
                     protected_resident_ids=(focus_resident_id,))
                 resident_registry = resident_migration["registry"]
+                resident_lifecycle_events.extend(
+                    resident_migration["events"])
                 if trace is not None:
                     trace["resident_events"].extend(
                         resident_migration["events"])
@@ -1813,6 +1968,26 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             # 出生・死亡・移住後の人口/年齢構成を同月の行動評価と表示へ反映。
             # 移住は需要を人と一緒に動かすだけなので世界需要合計を変えない。
             _refresh_household_needs(turn)
+            lifecycle_kinds = {
+                event.get("kind") for event in resident_lifecycle_events}
+            if lifecycle_kinds & {
+                    "household_split", "residents_migrated",
+                    "household_closed"}:
+                household_lifecycle = plan_household_goods_lifecycle(
+                    household_goods_state, settlements, resident_registry,
+                    household_needs_state, organization_state,
+                    resident_lifecycle_events, turn)
+                household_goods_state = household_lifecycle["state"]
+                settlements = household_lifecycle["settlements"]
+                _record_household_goods_events(
+                    household_lifecycle["events"])
+            else:
+                reconciled = reconcile_household_goods_state(
+                    household_goods_state, settlements, resident_registry,
+                    household_needs_state, organization_state, turn)
+                household_goods_state = reconciled["state"]
+                _record_household_goods_events(reconciled["events"])
+            _load_focus_economy()
             living_stages = [
                 row["stage"] for row in settlements.values()
                 if row["population"] > 0]
@@ -2190,6 +2365,10 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                 # 〈energy/peace〉の適用は上のdelta適用で他のarchetypeと同じ経路で
                 # 既に完了済み——これは財という「別帳簿」への効果のみ)。
                 if choice["key"] in ("barter", "subsistence"):
+                    action_goods_before = {
+                        "food": food, "medicine": medicine,
+                        "shelter": shelter, "tools": tools,
+                    }
                     barter_effects = choice.get("goods_effects") or \
                         deps.barter_choice_effects_fn(choice["key"], production_capacity)
                     local_goods_cap = goods_capacity(
@@ -2213,6 +2392,31 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                     goods_min_seen["tools"] = min(goods_min_seen["tools"], tools)
                     goods_min_seen["production_capacity"] = min(
                         goods_min_seen["production_capacity"], production_capacity)
+                    if continue_world:
+                        # 共同体総量への効果を正本へ先に反映し、その実現増分だけを
+                        # 行動した世帯の内訳へ帰属させる。capで失われたraw効果を
+                        # 世帯保有へ計上しない。
+                        _sync_focus_economy()
+                        focus_resident = resident_registry[
+                            "residents"].get(focus_resident_id, {})
+                        action_goods = {
+                            good: round(max(
+                                0.0, value - action_goods_before[good]), 6)
+                            for good, value in {
+                                "food": food, "medicine": medicine,
+                                "shelter": shelter, "tools": tools,
+                            }.items()
+                        }
+                        action_credit = credit_household_action_goods(
+                            household_goods_state, settlements,
+                            resident_registry, household_needs_state,
+                            organization_state,
+                            str(focus_resident.get("household_id") or ""),
+                            focus_settlement_id, action_goods, turn,
+                            reason=choice["key"])
+                        household_goods_state = action_credit["state"]
+                        _record_household_goods_events(
+                            action_credit["events"])
                 if "contract" in choice:
                     c = choice["contract"]
                     if c["counterparty"] not in npcs:
@@ -2303,6 +2507,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             # 確定してから、永続空間をちょうど1回だけ進める。
             _sync_spatial_state()
             _sync_organizations()
+            _sync_household_agency()
         if turn in checkpoint_turns:
             settlement_counts_by_checkpoint[turn] = dict(settlement_outcome_counts)
             # 2026-08-16(可視化ダッシュボード用trace追加時のリファクタリング):
@@ -2429,6 +2634,8 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             "activity_economy_state": activity_economy_state,
             "organization_state": organization_state,
             "household_needs_state": household_needs_state,
+            "household_goods_state": household_goods_state,
+            "household_agency_state": household_agency_state,
             "focus_resident_id": focus_resident_id,
             "population_stage": population_stage,
             "population_tracking": population_tracking,
@@ -2470,6 +2677,8 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             "activity_economy_state": activity_economy_state,
             "organization_state": organization_state,
             "household_needs_state": household_needs_state,
+            "household_goods_state": household_goods_state,
+            "household_agency_state": household_agency_state,
             "focus_resident_id": focus_resident_id,
             "population_stage": population_stage,
             "generation": generation,
@@ -3177,14 +3386,17 @@ def collect_visualize_trace(seed: int, policy_name: str, turns: int, safety_floo
                  "npc_events": [], "character_events": [],
                  "population_events": [], "trade_events": [],
                  "resident_events": [], "spatial_keyframes": [],
-                 "organization_events": [], "organization_effects": []}
+                 "organization_events": [], "organization_effects": [],
+                 "household_goods_events": [],
+                 "household_agency_events": []}
     else:
         # 永続水槽は過去のtraceへ今回区間を追記する。呼び出し側が古いschemaの
         # traceを渡しても、追加済みのイベントstreamだけ安全に補う。
         for name in ("turns", "settlements", "npc_introductions",
                      "npc_events", "character_events", "population_events",
                      "trade_events", "resident_events", "spatial_keyframes",
-                     "organization_events", "organization_effects"):
+                     "organization_events", "organization_effects",
+                     "household_goods_events", "household_agency_events"):
             trace.setdefault(name, [])
     resume_kwargs = ({"resume_state": resume_state}
                      if resume_state is not None else {})
@@ -3253,6 +3465,10 @@ def collect_visualize_trace(seed: int, policy_name: str, turns: int, safety_floo
                 "organization_state", initial_organization_state()),
             "household_needs_state": r.get(
                 "household_needs_state", {}),
+            "household_goods_state": r.get(
+                "household_goods_state", initial_household_goods_state()),
+            "household_agency_state": r.get(
+                "household_agency_state", initial_household_agency_state()),
             "focus_resident_id": r.get("focus_resident_id"),
         })
         focus_id = r.get("focus_settlement_id", HOME_SETTLEMENT_ID)

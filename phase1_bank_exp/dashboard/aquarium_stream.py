@@ -57,6 +57,14 @@ _EVENT_SIGNAL = {
     "pioneering_settled": FRAME_SIGNAL_SPATIAL,
     "pioneering_community_formed": FRAME_SIGNAL_SPATIAL,
     "population_changed": FRAME_SIGNAL_POPULATION,
+    "household_goods_migrated": FRAME_SIGNAL_TRADE | FRAME_SIGNAL_MIGRATION,
+    "anonymous_goods_migrated": FRAME_SIGNAL_TRADE | FRAME_SIGNAL_MIGRATION,
+    "household_goods_acquired": FRAME_SIGNAL_ACTIVITY,
+    "household_goods_inherited": FRAME_SIGNAL_ACTIVITY,
+    "household_goods_released": FRAME_SIGNAL_ACTIVITY,
+    "household_common_goods_accessed": FRAME_SIGNAL_ACTIVITY,
+    "household_response_changed": FRAME_SIGNAL_ACTIVITY,
+    "household_response_summary": FRAME_SIGNAL_ACTIVITY,
 }
 
 
