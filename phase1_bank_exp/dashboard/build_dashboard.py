@@ -295,6 +295,11 @@ def build_turns(trace_turns: list) -> list:
                 "world_organization_goods_claims": {
                     key: round3(value) for key, value in row.get(
                         "world_organization_goods_claims", {}).items()},
+                "world_household_barter_volume_by_good": {
+                    key: round3(value) for key, value in row.get(
+                        "world_household_barter_volume_by_good", {}).items()},
+                "world_household_barter_exchange_count": int(row.get(
+                    "world_household_barter_exchange_count", 0)),
                 "living_resident_count": row.get(
                     "living_resident_count", row.get("total_population")),
                 "active_household_count": row.get("active_household_count"),
@@ -533,6 +538,14 @@ def build_residents(registry: dict, current_turn: int,
             "goods_common_access_totals": {
                 key: round3(value) for key, value in goods_account.get(
                     "common_access_totals", {}).items()},
+            "goods_barter_sent_totals": {
+                key: round3(value) for key, value in goods_account.get(
+                    "barter_sent_totals", {}).items()},
+            "goods_barter_received_totals": {
+                key: round3(value) for key, value in goods_account.get(
+                    "barter_received_totals", {}).items()},
+            "barter_exchange_count": int(goods_account.get(
+                "barter_exchange_count", 0)),
             "goods_consumed_totals": {
                 key: round3(value) for key, value in goods_account.get(
                     "consumed_totals", {}).items()},
@@ -672,7 +685,7 @@ def build_observer_events(turns: list, settlements: list, npcs: list,
     observable_goods_kinds = {
         "household_goods_migrated", "anonymous_goods_migrated",
         "household_goods_acquired", "household_goods_inherited",
-        "household_goods_released",
+        "household_goods_released", "household_barter_exchange_summary",
     }
     for event in household_goods_events or ():
         if event.get("kind") not in observable_goods_kinds:
@@ -855,6 +868,12 @@ def build_dashboard_data(trace_data: dict, bin_count: int = DEFAULT_BIN_COUNT) -
         turns[-1].get("world_common_goods_pool", {}) if turns else {})
     latest_world_organization_claims = dict(
         turns[-1].get("world_organization_goods_claims", {}) if turns else {})
+    latest_world_household_barter_volume = dict(
+        turns[-1].get(
+            "world_household_barter_volume_by_good", {}) if turns else {})
+    latest_world_household_barter_count = int(
+        turns[-1].get(
+            "world_household_barter_exchange_count", 0) if turns else 0)
     latest_world_household_priority_counts = dict(
         turns[-1].get(
             "world_household_priority_counts_by_good", {}) if turns else {})
@@ -1016,6 +1035,11 @@ def build_dashboard_data(trace_data: dict, bin_count: int = DEFAULT_BIN_COUNT) -
             "world_organization_goods_claims": {
                 key: round3(value) for key, value in
                 latest_world_organization_claims.items()},
+            "world_household_barter_volume_by_good": {
+                key: round3(value) for key, value in
+                latest_world_household_barter_volume.items()},
+            "world_household_barter_exchange_count": (
+                latest_world_household_barter_count),
             "world_household_priority_counts_by_good": {
                 key: int(value) for key, value in
                 latest_world_household_priority_counts.items()},

@@ -54,6 +54,9 @@ def _account_record(account_id: str, settlement_id: str, *,
         "holdings": _zero_goods(),
         "acquired_totals": _zero_goods(),
         "common_access_totals": _zero_goods(),
+        "barter_sent_totals": _zero_goods(),
+        "barter_received_totals": _zero_goods(),
+        "barter_exchange_count": 0,
         "consumed_totals": _zero_goods(),
         "inherited_totals": _zero_goods(),
         "migrated_sent_totals": _zero_goods(),
@@ -79,6 +82,9 @@ def initial_household_goods_state(turn: int = 0) -> dict:
         "world_anonymous_holdings": _zero_goods(),
         "world_organization_claims": _zero_goods(),
         "world_common_pool": _zero_goods(),
+        "world_household_barter_volume_by_good": _zero_goods(),
+        "world_household_barter_exchange_count": 0,
+        "household_barter_applied_turn": None,
     }
 
 
@@ -99,18 +105,24 @@ def upgrade_household_goods_state(state: dict | None) -> dict:
         row["settlement_id"] = str(row.get("settlement_id", ""))
         for field in (
                 "holdings", "acquired_totals", "common_access_totals",
+                "barter_sent_totals", "barter_received_totals",
                 "consumed_totals",
                 "inherited_totals", "migrated_sent_totals",
                 "migrated_received_totals"):
             row[field] = _goods(row.get(field))
+        row["barter_exchange_count"] = max(
+            0, int(row.get("barter_exchange_count", 0)))
     for settlement_id, row in after["anonymous_pools"].items():
         row["settlement_id"] = str(settlement_id)
         row["population"] = max(0, int(row.get("population", 0)))
         for field in (
                 "holdings", "acquired_totals", "common_access_totals",
+                "barter_sent_totals", "barter_received_totals",
                 "consumed_totals",
                 "migrated_sent_totals", "migrated_received_totals"):
             row[field] = _goods(row.get(field))
+        row["barter_exchange_count"] = max(
+            0, int(row.get("barter_exchange_count", 0)))
     for field in (
             "common_pool_by_community", "organization_claims_by_community"):
         after.setdefault(field, {})
@@ -119,8 +131,13 @@ def upgrade_household_goods_state(state: dict | None) -> dict:
     for field in (
             "world_physical_goods", "world_household_holdings",
             "world_anonymous_holdings", "world_organization_claims",
-            "world_common_pool"):
+            "world_common_pool", "world_household_barter_volume_by_good"):
         after[field] = _goods(after.get(field))
+    after["world_household_barter_exchange_count"] = max(
+        0, int(after.get("world_household_barter_exchange_count", 0)))
+    applied_turn = after.get("household_barter_applied_turn")
+    after["household_barter_applied_turn"] = (
+        None if applied_turn is None else int(applied_turn))
     return after
 
 
@@ -646,7 +663,8 @@ def _find_heir_household(registry: dict, closed_household_id: str,
 def plan_household_goods_lifecycle(
         state: dict | None, settlements: dict, registry: dict,
         household_needs_state: dict, organization_state: dict | None,
-        resident_events: list[dict], turn: int) -> dict:
+        resident_events: list[dict], turn: int, *,
+        reconcile_organization_state_fn=None) -> dict:
     """死亡・世帯分割・移住を保有財と共同体総量へ反映する。"""
     after = upgrade_household_goods_state(state)
     after_settlements = copy.deepcopy(settlements)
@@ -807,13 +825,19 @@ def plan_household_goods_lifecycle(
             "reason": reason,
         })
 
+    adjusted_organization_state = (
+        reconcile_organization_state_fn(
+            organization_state, after_settlements)
+        if reconcile_organization_state_fn is not None
+        else organization_state)
     reconciled = reconcile_household_goods_state(
         after, after_settlements, registry, household_needs_state,
-        organization_state, turn)
+        adjusted_organization_state, turn)
     events.extend(reconciled["events"])
     return {
         "state": reconciled["state"],
         "settlements": after_settlements,
+        "organization_state": adjusted_organization_state,
         "events": events,
     }
 

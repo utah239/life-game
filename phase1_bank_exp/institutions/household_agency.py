@@ -21,6 +21,7 @@ from institutions.household_goods import (
     upgrade_household_goods_state,
     verify_household_goods_state,
 )
+from institutions.household_exchange import plan_household_barter_exchange
 from institutions.local_credit import (
     LOCAL_CREDIT_STAGE_CONTRACTION,
     LOCAL_CREDIT_STAGE_HEALTHY,
@@ -263,7 +264,8 @@ def _priority_good(shortfall: dict, previous: str | None,
 def plan_household_agency(
         state: dict | None, household_goods_state: dict | None,
         settlements: dict, registry: dict, household_needs_state: dict,
-        organization_state: dict | None, turn: int) -> dict:
+        organization_state: dict | None, turn: int, *,
+        barter_active: bool = False) -> dict:
     """共用財アクセスを適用し、世帯ごとの次月優先財を計画する。"""
     before = upgrade_household_agency_state(state)
     if verify_household_goods_state(
@@ -280,6 +282,13 @@ def plan_household_agency(
         reconciliation_events = reconciled["events"]
     access_events = _grant_common_access(
         goods_working, household_needs_state, settlements, turn)
+    exchange_events = []
+    if barter_active:
+        exchange = plan_household_barter_exchange(
+            goods_working, settlements, household_needs_state, turn,
+            enabled=True)
+        goods_working = exchange["state"]
+        exchange_events = exchange["events"]
     _refresh_goods_aggregates(goods_working, turn)
     goods_after = goods_working
     if not verify_household_goods_state(
@@ -425,7 +434,8 @@ def plan_household_agency(
         "state": after,
         "household_goods_state": goods_after,
         "events": response_events,
-        "household_goods_events": reconciliation_events + access_events,
+        "household_goods_events": (
+            reconciliation_events + access_events + exchange_events),
     }
 
 

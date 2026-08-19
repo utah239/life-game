@@ -606,7 +606,7 @@
       <div class="npc-table-wrap">
         <table class="npc-table">
           <thead><tr>
-            <th>世帯</th><th>活動集落</th><th>生業</th><th>現在の対応</th><th>累積活動 食/薬/住/具</th><th>現在保有 食/薬/住/具</th><th>充足率 %</th><th class="num">生存者</th><th>最近の担い手</th><th>構成員</th>
+            <th>世帯</th><th>活動集落</th><th>生業</th><th>現在の対応</th><th>累積活動 食/薬/住/具</th><th>現在保有 食/薬/住/具</th><th>充足率 %</th><th>世帯間交換</th><th class="num">生存者</th><th>最近の担い手</th><th>構成員</th>
           </tr></thead>
           <tbody id="household-table-body"></tbody>
         </table>
@@ -3024,7 +3024,8 @@ function buildAquariumParticleScene(width, height, turn, focusId) {
   const field = buildActivityField(width, height, residents || [], turn);
   const flows = (OBSERVER_EVENTS_BY_TURN.get(turn) || []).filter(event =>
     event.kind === 'intersettlement_trade'
-      || event.kind === 'residents_migrated');
+      || event.kind === 'residents_migrated'
+      || event.kind === 'household_barter_exchange_summary');
   const densityEvents = densityEventsAt(turn);
   if (!flows.some(event => event.kind === 'residents_migrated')) {
     densityEvents.migrations.forEach(event => flows.push({
@@ -3657,6 +3658,51 @@ function drawFlowParticles(ctx, flows, field, wallSeconds) {
         ctx, x, y, field.width, field.height);
     }
   });
+  flows.filter(event => event.kind === 'household_barter_exchange_summary')
+    .forEach((event, eventIndex) => {
+      const center = field.centroids.get(event.settlement_id);
+      if (!center) return;
+      const endpoint = householdId => {
+        const site = householdId
+          ? field.siteByHousehold.get(householdId) : null;
+        return site
+          ? {x: site.homeX, y: site.homeY}
+          : center;
+      };
+      const drawRoute = (from, to, good, amount, routeIndex, reverse) => {
+        if (!from || !to) return;
+        const color = LIVELIHOOD_COLORS[good] || '#769d8d';
+        const particles = Math.min(
+          5, Math.max(1, Math.ceil(Math.sqrt(Number(amount || 0.01)))));
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.88;
+        for (let index = 0; index < particles; index++) {
+          const phase = (wallSeconds / 2.6 + index / particles
+            + eventIndex * 0.137 + routeIndex * 0.071
+            + (reverse ? 0.5 : 0)) % 1;
+          const dx = to.x - from.x, dy = to.y - from.y;
+          const length = Math.max(1, Math.hypot(dx, dy));
+          const lane = reverse ? -1.4 : 1.4;
+          const bend = Math.sin(phase * Math.PI) * lane
+            * Math.min(4, Math.max(1, length * 0.06));
+          drawAquariumPixel(
+            ctx,
+            from.x + dx * phase - dy / length * bend,
+            from.y + dy * phase + dx / length * bend,
+            field.width, field.height);
+        }
+      };
+      (event.routes_sample || []).forEach((route, routeIndex) => {
+        const left = endpoint(route.left_household_id);
+        const right = endpoint(route.right_household_id);
+        drawRoute(
+          left, right, route.left_gives_good,
+          route.left_gives_amount, routeIndex, false);
+        drawRoute(
+          right, left, route.right_gives_good,
+          route.right_gives_amount, routeIndex, true);
+      });
+    });
   flows.filter(event => event.kind === 'population_density_migration')
     .forEach((event, flowIndex) => {
       const from = field.centroids.get(event.from_settlement);
@@ -4124,7 +4170,8 @@ function setupPixelAquarium() {
       || settlementId || '所属未記録';
     const residentDetail = residentDetailCache.get(resident.id);
     const householdResponse = residentDetail?.household_response || {};
-    const householdHoldings = residentDetail?.household_goods?.holdings || {};
+    const householdGoods = residentDetail?.household_goods || {};
+    const householdHoldings = householdGoods.holdings || {};
     const responseLine = householdResponse.priority_good
       ? `<br>世帯は${escapeHtml(LIVELIHOOD_JA[householdResponse.priority_good]
           || householdResponse.priority_good)}を優先（${Number(
@@ -4135,6 +4182,9 @@ function setupPixelAquarium() {
           householdHoldings.medicine || 0)} · 住${fmtValue(
           householdHoldings.shelter || 0)} · 具${fmtValue(
           householdHoldings.tools || 0)}` : '';
+    const barterLine = residentDetail
+      ? `<br>世帯間交換 ${Number(householdGoods.barter_exchange_count || 0)}件`
+      : '';
     tooltip.innerHTML =
       `${escapeHtml(resident.name)}<br>${escapeHtml(hit.site.name || '世帯不明')} · ${escapeHtml(settlementName)}`
       + `<br>${escapeHtml(LIVELIHOOD_JA[hit.activity] || hit.activity || '生業未記録')} · 第${Number(resident.generation || 0)}世代`
@@ -4147,7 +4197,7 @@ function setupPixelAquarium() {
         : (hit.clusterId
           ? `<br>活動集落 ${escapeHtml(hit.clusterId)}` : ''))
       + (hit.density > 1 ? `<br>同じpixelに${hit.density}人 · 色を合成` : '')
-      + responseLine + holdingsLine
+      + responseLine + holdingsLine + barterLine
       + (parentNames.length ? `<br>親 ${parentNames.map(escapeHtml).join('・')}` : '');
     tooltip.style.display = 'block';
     tooltip.style.left =
@@ -4372,6 +4422,13 @@ function renderVitals() {
   const worldDemandByGood = [
     ['食', 'food'], ['薬', 'medicine'], ['住', 'shelter'], ['具', 'tools'],
   ].map(([label, key]) => `${label}${fmtValue(worldDemand[key] ?? 0)}`).join(' · ');
+  const householdBarterVolume = observed?.world_household_barter_volume_by_good
+    || m.world_household_barter_volume_by_good || {};
+  const householdBarterVolumeText = [
+    ['食', 'food'], ['薬', 'medicine'], ['住', 'shelter'], ['具', 'tools'],
+  ].map(([label, key]) => `${label}${fmtValue(householdBarterVolume[key] ?? 0)}`).join(' · ');
+  const householdBarterCount = observed?.world_household_barter_exchange_count
+    ?? m.world_household_barter_exchange_count ?? 0;
   const focusHouseholdGoods = observed?.focus_household_goods || {};
   const focusHouseholdCoverage = observed?.focus_household_goods_coverage_by_good || {};
   const focusHouseholdGoodsText = [
@@ -4418,6 +4475,7 @@ function renderVitals() {
       <div class="vital"><span class="label">共同体会計</span><span class="value">${accountingClusterCount}共同体${provisionalClusterCount ? ` / 前集落${provisionalClusterCount}` : ''}</span></div>
       <div class="vital"><span class="label">累計移住</span><span class="value">${observed?.migration_total ?? m.migration_total ?? 0}人</span></div>` : ''}
       ${m.world_mode ? `<div class="vital"><span class="label">集落間交易</span><span class="value">${fmtValue(observed?.trade_volume_total ?? m.trade_volume_total ?? 0)}財 / ${observed?.trade_event_count ?? m.trade_event_count ?? 0}件</span></div>` : ''}
+      ${m.world_mode ? `<div class="vital"><span class="label">世帯間交換</span><span class="value">${Number(householdBarterCount).toLocaleString()}件 · ${householdBarterVolumeText}</span></div>` : ''}
       <div class="vital"><span class="label">銀行</span><span class="value">Stage${fin.bank_stage} <span style="color:var(--ink-faint);font-size:11px">${stageWord[fin.bank_stage]}</span></span></div>
       <div class="vital"><span class="label">通貨</span><span class="value">Stage${fin.currency_stage}</span></div>
       <div class="vital"><span class="label">地域信用</span><span class="value">Stage${fin.local_credit_stage}</span></div>
@@ -4513,6 +4571,13 @@ function observationEvents(row) {
       const count = Object.values(event.priority_household_counts_by_good || {})
         .reduce((sum, value) => sum + Number(value || 0), 0);
       return `${escapeHtml(place)}で${count}世帯が不足へ対応し、${escapeHtml(LIVELIHOOD_JA[worst] || worst)}の圧力が${fmtValue(Number(pressure[worst] || 0) * 100)}%になった`;
+    }
+    if (event.kind === 'household_barter_exchange_summary') {
+      const place = DATA.settlement_states?.[event.settlement_id]?.name
+        || event.settlement_id;
+      const volume = Object.values(event.volume_by_good || {})
+        .reduce((sum, value) => sum + Number(value || 0), 0);
+      return `${escapeHtml(place)}で${Number(event.exchange_count || 0)}組の欲求が一致し、財 ${fmtValue(volume)}を即時交換した`;
     }
     if (event.kind === 'character_died') return `${event.resident_name ? escapeHtml(event.resident_name) : `第${event.generation || '?'}世代の人物`}が死亡した（集落人口 ${event.population_after ?? '—'}）`;
     if (event.kind === 'successor_selected') {
@@ -4997,6 +5062,10 @@ function renderResidentHouseholds() {
   };
   const goodsText = values => ['food', 'medicine', 'shelter', 'tools']
     .map(key => fmtValue(values?.[key] ?? 0)).join(' / ');
+  const householdBarterText = row => `${Number(
+    row.barter_exchange_count || 0).toLocaleString()}件 / 送${goodsText(
+      row.goods_barter_sent_totals)} / 受${goodsText(
+      row.goods_barter_received_totals)}`;
   const responseText = row => row.priority_good
     ? `${LIVELIHOOD_JA[row.priority_good] || row.priority_good}優先（${Number(row.consecutive_shortage_months || 0)}か月）`
     : '通常';
@@ -5074,12 +5143,13 @@ function renderResidentHouseholds() {
       <td class="num">${activityCountText(row)}</td>
       <td class="num">${goodsText(row.goods_holdings)}</td>
       <td class="num">${goodsText(row.goods_coverage_by_good)}</td>
+      <td class="num">${householdBarterText(row)}</td>
       <td class="num">${row.living_members}</td>
       <td>${row.last_activity_turn !== null && row.last_activity_turn <= observedTurn
         ? `${escapeHtml(lastActorNames.get(row.last_actor_id) || '—')} / T${row.last_activity_turn}` : '—'}</td>
       <td>${row.member_names.length ? row.member_names.map(escapeHtml).join('・') : '—'}</td>
     </tr>`;
-  }).join('') : '<tr><td colspan="10">世帯台帳の記録なし</td></tr>';
+  }).join('') : '<tr><td colspan="11">世帯台帳の記録なし</td></tr>';
   document.getElementById('resident-count-note').textContent =
     `${visibleResidentCount.toLocaleString()}人記録` +
     (visibleResidentCount > visibleResidents.length

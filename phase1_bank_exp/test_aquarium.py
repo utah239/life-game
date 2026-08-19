@@ -1118,13 +1118,14 @@ class AquariumStreamContractTest(unittest.TestCase):
 
     def test_semantic_frames_cover_confirmed_turns_and_reference_signals(self):
         data = {
-            "turns": [{"t": turn} for turn in range(20, 25)],
+            "turns": [{"t": turn} for turn in range(20, 26)],
             "meta": {}, "settlements": [],
             "observer_events": [
                 {"t": 21, "kind": "production_activity"},
                 {"t": 22, "kind": "intersettlement_trade"},
                 {"t": 23, "kind": "residents_migrated"},
                 {"t": 24, "kind": "organization_reformed"},
+                {"t": 25, "kind": "household_barter_exchange_summary"},
             ],
             "spatial_keyframes": [{"turn": 24}],
             "spatial_history": {"version": 1, "frames": []},
@@ -1134,7 +1135,7 @@ class AquariumStreamContractTest(unittest.TestCase):
         world = {
             "stream_id": "world-semantic", "frame_sequence_end": 100,
             "revision": 1, "summary": {"completed_turn": 24},
-            "frame_turn_start": 21, "frame_turn_end": 24,
+            "frame_turn_start": 21, "frame_turn_end": 25,
             "clock": {"tick_seconds": 30},
         }
         snapshot = aquarium_stream.build_stream_snapshot(data, world)
@@ -1143,7 +1144,7 @@ class AquariumStreamContractTest(unittest.TestCase):
         self.assertEqual(random.getstate(), random_state)
         self.assertEqual(snapshot["frame_schema_version"], 2)
         self.assertEqual(snapshot["frame_turn_start"], 21)
-        self.assertEqual(snapshot["frame_turn_end"], 24)
+        self.assertEqual(snapshot["frame_turn_end"], 25)
         self.assertEqual(snapshot["keyframe"]["spatial_keyframes"], [
             {"turn": 24}])
         self.assertEqual(snapshot["keyframe"]["spatial_history"], {
@@ -1152,7 +1153,7 @@ class AquariumStreamContractTest(unittest.TestCase):
         for frame in snapshot["frames"]:
             by_turn.setdefault(frame["turn"], []).append(frame)
         self.assertEqual({turn: len(rows) for turn, rows in by_turn.items()}, {
-            21: 25, 22: 25, 23: 25, 24: 25})
+            21: 20, 22: 20, 23: 20, 24: 20, 25: 20})
         self.assertTrue(all(rows[0]["month_phase"] == 0.0
                             and rows[-1]["month_phase"] == 1.0
                             for rows in by_turn.values()))
@@ -1168,6 +1169,9 @@ class AquariumStreamContractTest(unittest.TestCase):
         self.assertTrue(all(
             row["signal_mask"] & aquarium_stream.FRAME_SIGNAL_ORGANIZATION
             for row in by_turn[24]))
+        self.assertTrue(all(
+            row["signal_mask"] & aquarium_stream.FRAME_SIGNAL_TRADE
+            for row in by_turn[25]))
 
     def test_event_payload_is_not_duplicated_into_hundred_frames(self):
         data = {
@@ -1396,6 +1400,11 @@ function setStatus(message,isError){statusMessages.push([message,isError]);}
         self.assertIn("population_migrated", template)
         self.assertIn("settlement_populations", template)
         self.assertIn("intersettlement_trade", template)
+        self.assertIn("household_barter_exchange_summary", template)
+        self.assertIn("routes_sample", template)
+        self.assertIn("world_household_barter_exchange_count", template)
+        self.assertIn("world_household_barter_volume_by_good", template)
+        self.assertIn("世帯間交換", template)
         self.assertIn('id="settlement-ledger-body"', template)
         self.assertIn('id="resident-table-body"', template)
         self.assertIn("function renderResidentHouseholds()", template)
