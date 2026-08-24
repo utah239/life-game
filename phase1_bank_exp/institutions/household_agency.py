@@ -265,7 +265,9 @@ def plan_household_agency(
         state: dict | None, household_goods_state: dict | None,
         settlements: dict, registry: dict, household_needs_state: dict,
         organization_state: dict | None, turn: int, *,
-        barter_active: bool = False) -> dict:
+        barter_active: bool = False,
+        relationship_support_by_household: (
+            dict[str, float] | None) = None) -> dict:
     """共用財アクセスを適用し、世帯ごとの次月優先財を計画する。"""
     before = upgrade_household_agency_state(state)
     if verify_household_goods_state(
@@ -283,12 +285,16 @@ def plan_household_agency(
     access_events = _grant_common_access(
         goods_working, household_needs_state, settlements, turn)
     exchange_events = []
+    relationship_routes = []
     if barter_active:
         exchange = plan_household_barter_exchange(
             goods_working, settlements, household_needs_state, turn,
-            enabled=True)
+            enabled=True,
+            relationship_support_by_household=(
+                relationship_support_by_household))
         goods_working = exchange["state"]
         exchange_events = exchange["events"]
+        relationship_routes = exchange["relationship_routes"]
     _refresh_goods_aggregates(goods_working, turn)
     goods_after = goods_working
     if not verify_household_goods_state(
@@ -436,6 +442,7 @@ def plan_household_agency(
         "events": response_events,
         "household_goods_events": (
             reconciliation_events + access_events + exchange_events),
+        "relationship_routes": relationship_routes,
     }
 
 

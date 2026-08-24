@@ -22,7 +22,8 @@ MAX_CHUNK_FRAMES = 150
 # spatial_history/全turn/全observer eventは既存HTMLの履歴側に残す。
 _CURRENT_KEYS = (
     "meta", "final", "final_resources", "final_traits",
-    "npcs", "residents", "households", "spatial_state",
+    "npcs", "residents", "households", "resident_relationships",
+    "spatial_state",
     "particle_frame", "particle_cohorts", "activity_community_ledger",
     "activity_economy_state",
     "organization_state", "institution_trajectories", "settlement_states", "choice_bins",
@@ -109,6 +110,8 @@ def build_live_keyframe(dashboard_data: dict) -> dict:
     }
     for name in _CURRENT_KEYS:
         keyframe[name] = dashboard_data.get(name)
+    keyframe["resident_relationships"] = list(
+        dashboard_data.get("resident_relationships") or ())
     # workerのresultを呼び出し側が後で再利用しても配信snapshotが変化しない。
     return copy.deepcopy(keyframe)
 
@@ -272,7 +275,10 @@ def build_keyframe_delta(before: dict, after: dict, *,
     if (before.get("schema_version") != KEYFRAME_SCHEMA_VERSION
             or after.get("schema_version") != KEYFRAME_SCHEMA_VERSION):
         raise ValueError("unsupported aquarium keyframe for delta")
-    entity_keys = {"npcs": "name", "residents": "id", "households": "id"}
+    entity_keys = {
+        "npcs": "name", "residents": "id", "households": "id",
+        "resident_relationships": "id",
+    }
     entity_names = tuple(entity_keys)
     tail_names = ("observer_events", "settlements")
     excluded = {
@@ -319,7 +325,10 @@ def apply_keyframe_delta(before: dict, delta: dict) -> dict:
     after.update(copy.deepcopy(delta.get("current", {})))
     after["turns"] = _apply_keyed_rows_patch(
         before.get("turns", []), delta.get("turns", {}), "t")
-    entity_keys = {"npcs": "name", "residents": "id", "households": "id"}
+    entity_keys = {
+        "npcs": "name", "residents": "id", "households": "id",
+        "resident_relationships": "id",
+    }
     for name, patch in delta.get("entities", {}).items():
         if name not in entity_keys:
             raise ValueError("unsupported aquarium keyframe delta entity")

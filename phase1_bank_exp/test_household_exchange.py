@@ -213,6 +213,34 @@ class HouseholdExchangeTest(unittest.TestCase):
             thinned["normalized_units"],
             functioning["normalized_units"] * 0.5, places=9)
 
+    def test_relationships_restore_only_part_of_thinned_search_capacity(self):
+        support = {"h000": 1.0, "h001": 1.0}
+        thinned = household_exchange.plan_household_barter_exchange(
+            *_fixture(stage=barter.BARTER_STAGE_THINNED), 1,
+            enabled=True)
+        supported_thinned = household_exchange.plan_household_barter_exchange(
+            *_fixture(stage=barter.BARTER_STAGE_THINNED), 1,
+            enabled=True, relationship_support_by_household=support)
+        functioning = household_exchange.plan_household_barter_exchange(
+            *_fixture(stage=barter.BARTER_STAGE_FUNCTIONING), 1,
+            enabled=True)
+        supported_functioning = (
+            household_exchange.plan_household_barter_exchange(
+                *_fixture(stage=barter.BARTER_STAGE_FUNCTIONING), 1,
+                enabled=True, relationship_support_by_household=support))
+
+        self.assertAlmostEqual(
+            supported_thinned["normalized_units"],
+            thinned["normalized_units"] * 1.5, places=9)
+        self.assertEqual(
+            supported_functioning["normalized_units"],
+            functioning["normalized_units"])
+        event = supported_thinned["events"][0]
+        self.assertEqual(event["relationship_supported_participant_count"], 2)
+        self.assertGreater(event["relationship_capacity_bonus_units"], 0.0)
+        self.assertEqual(_claim_totals(supported_thinned["state"]),
+                         _claim_totals(_fixture()[0]))
+
     def test_same_turn_replan_is_idempotent_next_turn_can_continue(self):
         state, settlements, needs = _fixture()
         first = household_exchange.plan_household_barter_exchange(
@@ -249,6 +277,7 @@ class HouseholdExchangeTest(unittest.TestCase):
         self.assertEqual(event["anonymous_exchange_count"], 1)
         self.assertEqual(event["named_participant_count"], 1)
         self.assertTrue(event["routes_sample"][0]["right_anonymous"])
+        self.assertEqual(result["relationship_routes"], [])
         self.assertEqual(len(result["state"]["anonymous_pools"]), 1)
 
     def test_large_named_set_is_fully_applied_but_event_sample_is_bounded(self):
@@ -261,6 +290,7 @@ class HouseholdExchangeTest(unittest.TestCase):
         self.assertEqual(
             len(event["routes_sample"]),
             household_exchange.HOUSEHOLD_BARTER_ROUTE_SAMPLE_LIMIT)
+        self.assertEqual(len(result["relationship_routes"]), 2048)
         self.assertEqual(event["named_participant_count"], 4096)
         self.assertEqual(len(result["state"]["households"]), 4096)
         self.assertEqual(len(result["state"]["anonymous_pools"]), 0)
@@ -300,6 +330,7 @@ class HouseholdExchangeTest(unittest.TestCase):
         self.assertTrue(any(
             event["kind"] == "household_barter_exchange_summary"
             for event in with_exchange["household_goods_events"]))
+        self.assertEqual(len(with_exchange["relationship_routes"]), 1)
         self.assertTrue(household_agency.verify_household_agency_state(
             with_exchange["state"], with_exchange["household_goods_state"],
             needs))

@@ -304,6 +304,8 @@ def _summary(checkpoint: dict, history_months: int) -> dict:
     focus_household_goods_coverage = household_goods_coverage(
         household_goods_state, needs_state, focus_household_id)
     household_agency_state = checkpoint.get("household_agency_state", {})
+    resident_relationship_state = checkpoint.get(
+        "resident_relationship_state", {})
     focus_household_response = dict(
         household_agency_state.get("households", {}).get(
             focus_household_id, {}))
@@ -395,6 +397,15 @@ def _summary(checkpoint: dict, history_months: int) -> dict:
         "world_household_barter_exchange_count": int(
             household_goods_state.get(
                 "world_household_barter_exchange_count", 0)),
+        "world_resident_relationship_count": int(
+            resident_relationship_state.get(
+                "world_relationship_count", 0)),
+        "world_cross_community_relationship_count": int(
+            resident_relationship_state.get(
+                "world_cross_community_relationship_count", 0)),
+        "world_relationship_interactions_by_kind": dict(
+            resident_relationship_state.get(
+                "world_interactions_by_kind", {})),
         "production_practice_by_good": focus_practice,
         "production_productivity_factors_by_good": (
             production_productivity_factors(focus_practice)),

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import copy
+import math
 
 from institutions import barter
 from institutions.household_goods import (
@@ -32,6 +33,9 @@ HOUSEHOLD_BARTER_RESERVE_RATIO = 1.0
 HOUSEHOLD_BARTER_TARGET_RATIO = 1.0
 # 1世帯が1か月に交換へ回せる量。4財の平均月間需要を1.0とした正規化値。
 HOUSEHOLD_BARTER_MONTHLY_COVERAGE = 0.50
+# 既存の別世帯関係は、縮小市場で相手を探せる月間容量だけを支える。Stage 0の
+# 上限は越えず、財・需要・欲求の二重一致を生成することもない。
+RELATIONSHIP_BARTER_CAPACITY_BONUS = 0.50
 HOUSEHOLD_BARTER_ROUTE_SAMPLE_LIMIT = 24
 EPSILON = 1e-9
 
@@ -72,8 +76,22 @@ def _community_claim_totals(state: dict, community_id: str) -> dict[str, float]:
         for good in HOUSEHOLD_GOODS}
 
 
+def _relationship_support(
+        support_by_household: dict[str, float] | None,
+        household_id: str) -> float:
+    try:
+        value = float((support_by_household or {}).get(household_id, 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return max(0.0, min(1.0, value))
+
+
 def _party_rows(state: dict, needs: dict, references: dict,
-                capacity_factor: float) -> dict[str, dict]:
+                capacity_factor: float,
+                relationship_support_by_household: (
+                    dict[str, float] | None) = None) -> dict[str, dict]:
     parties = {}
     for household_id, demand_row in sorted(
             needs.get("household_demands", {}).items()):
@@ -88,15 +106,29 @@ def _party_rows(state: dict, needs: dict, references: dict,
         demand_units = sum(
             demand[good] / references[good]
             for good in HOUSEHOLD_GOODS) / len(HOUSEHOLD_GOODS)
+        relationship_support = _relationship_support(
+            relationship_support_by_household, household_id)
+        effective_capacity_factor = min(
+            1.0,
+            capacity_factor * (1.0 + RELATIONSHIP_BARTER_CAPACITY_BONUS
+                               * relationship_support))
+        base_capacity_units = (
+            demand_units * HOUSEHOLD_BARTER_MONTHLY_COVERAGE
+            * capacity_factor)
+        capacity_units = (
+            demand_units * HOUSEHOLD_BARTER_MONTHLY_COVERAGE
+            * effective_capacity_factor)
         parties[f"h:{household_id}"] = {
             "party_id": f"h:{household_id}",
             "household_id": household_id,
             "anonymous": False,
             "account": account,
             "demand": demand,
-            "capacity_units": (
-                demand_units * HOUSEHOLD_BARTER_MONTHLY_COVERAGE
-                * capacity_factor),
+            "base_capacity_units": base_capacity_units,
+            "capacity_units": capacity_units,
+            "relationship_support": relationship_support,
+            "relationship_capacity_bonus_units": max(
+                0.0, capacity_units - base_capacity_units),
             "used_units": 0.0,
         }
     anonymous = state.get("anonymous_pools", {}).get(
@@ -119,6 +151,11 @@ def _party_rows(state: dict, needs: dict, references: dict,
             "capacity_units": (
                 demand_units * HOUSEHOLD_BARTER_MONTHLY_COVERAGE
                 * capacity_factor),
+            "base_capacity_units": (
+                demand_units * HOUSEHOLD_BARTER_MONTHLY_COVERAGE
+                * capacity_factor),
+            "relationship_support": 0.0,
+            "relationship_capacity_bonus_units": 0.0,
             "used_units": 0.0,
         }
     return parties
@@ -224,7 +261,9 @@ def _record_swap(left: dict, right: dict,
 
 def plan_household_barter_exchange(
         household_goods_state: dict | None, settlements: dict,
-        household_needs_state: dict, turn: int, *, enabled: bool) -> dict:
+        household_needs_state: dict, turn: int, *, enabled: bool,
+        relationship_support_by_household: (
+            dict[str, float] | None) = None) -> dict:
     """同一共同体の1か月分の即時物々交換を計画する。
 
     ``enabled=False``、または共同体のbarter Stageが2以上なら交換しない。
@@ -236,11 +275,13 @@ def plan_household_barter_exchange(
     world_count = 0
     world_units = 0.0
     events = []
+    relationship_routes = []
     if (not enabled
             or after.get("household_barter_applied_turn") == int(turn)):
         return {
             "state": after, "events": events, "exchange_count": 0,
-            "volume_by_good": world_volume, "normalized_units": 0.0}
+            "volume_by_good": world_volume, "normalized_units": 0.0,
+            "relationship_routes": relationship_routes}
 
     references = _references()
     for community_id, needs in sorted(household_needs_state.get(
@@ -253,7 +294,9 @@ def plan_household_barter_exchange(
         if capacity_factor <= 0.0:
             continue
         before_totals = _community_claim_totals(after, community_id)
-        parties = _party_rows(after, needs, references, capacity_factor)
+        parties = _party_rows(
+            after, needs, references, capacity_factor,
+            relationship_support_by_household)
         if len(parties) < 2:
             continue
         routes = []
@@ -301,6 +344,9 @@ def plan_household_barter_exchange(
                     right_index += 1
                     continue
                 routes.append(route)
+                if (route["left_household_id"] is not None
+                        and route["right_household_id"] is not None):
+                    relationship_routes.append(route)
                 normalized_units += route["normalized_units"]
                 volume[left_good] = round(
                     volume[left_good] + route["left_gives_amount"],
@@ -326,6 +372,14 @@ def plan_household_barter_exchange(
                 world_volume[good] + volume[good], ROUND_DIGITS)
         world_count += len(routes)
         world_units += normalized_units
+        supported_participants = {
+            household_id for household_id in named_participants
+            if parties[f"h:{household_id}"][
+                "relationship_capacity_bonus_units"] > EPSILON}
+        relationship_capacity_bonus_units = sum(
+            parties[f"h:{household_id}"][
+                "relationship_capacity_bonus_units"]
+            for household_id in supported_participants)
         events.append({
             "turn": int(turn),
             "kind": "household_barter_exchange_summary",
@@ -334,6 +388,10 @@ def plan_household_barter_exchange(
             "capacity_factor": capacity_factor,
             "exchange_count": len(routes),
             "named_participant_count": len(named_participants),
+            "relationship_supported_participant_count": len(
+                supported_participants),
+            "relationship_capacity_bonus_units": round(
+                relationship_capacity_bonus_units, 12),
             "anonymous_exchange_count": anonymous_exchange_count,
             "normalized_units": round(normalized_units, 12),
             "volume_by_good": volume,
@@ -356,4 +414,5 @@ def plan_household_barter_exchange(
         "exchange_count": world_count,
         "volume_by_good": world_volume,
         "normalized_units": round(world_units, 12),
+        "relationship_routes": relationship_routes,
     }

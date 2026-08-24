@@ -493,6 +493,7 @@
       <span>1人 = 1粒子</span><span>重なり = 1pxへ色/人数集約</span><span>微光 = 活動場所</span>
       <span>明点 = 今月の担い手</span><span>近景の往復点 = 住民</span>
       <span>流れる点 = 財/移住</span>
+      <span>細線 = 実在する関係（親族/共働/交換）</span>
       <span>外へ伸びる点 = 新しい活動地の開拓</span>
       <span>疎な十字点 = 母共同体に属する前集落</span>
       <span>親→子の光 = 世代継承</span>
@@ -598,7 +599,7 @@
         <table class="npc-table">
           <thead><tr>
             <th>住民</th><th>世帯</th><th>活動集落</th><th class="num">年齢</th>
-            <th>生業</th><th>累積活動 食/薬/住/具</th><th>状態</th><th>由来</th>
+            <th>生業</th><th>累積活動 食/薬/住/具</th><th>関係</th><th>状態</th><th>由来</th>
           </tr></thead>
           <tbody id="resident-table-body"></tbody>
         </table>
@@ -606,7 +607,7 @@
       <div class="npc-table-wrap">
         <table class="npc-table">
           <thead><tr>
-            <th>世帯</th><th>活動集落</th><th>生業</th><th>現在の対応</th><th>累積活動 食/薬/住/具</th><th>現在保有 食/薬/住/具</th><th>充足率 %</th><th>世帯間交換</th><th>移住履歴</th><th class="num">生存者</th><th>最近の担い手</th><th>構成員</th>
+            <th>世帯</th><th>活動集落</th><th>生業</th><th>現在の対応</th><th>累積活動 食/薬/住/具</th><th>現在保有 食/薬/住/具</th><th>充足率 %</th><th>世帯間交換</th><th>関係</th><th>移住履歴</th><th class="num">生存者</th><th>最近の担い手</th><th>構成員</th>
           </tr></thead>
           <tbody id="household-table-body"></tbody>
         </table>
@@ -848,7 +849,8 @@ function applyAquariumLiveKeyframe(keyframe, replaceWorld=false) {
     DATA.settlements, keyframe.settlements || [], replaceWorld);
   for (const name of [
     'meta', 'final', 'final_resources', 'final_traits', 'npcs',
-    'residents', 'households', 'spatial_state', 'particle_frame',
+    'residents', 'households', 'resident_relationships',
+    'spatial_state', 'particle_frame',
     'particle_cohorts', 'activity_community_ledger', 'activity_economy_state',
     'organization_state',
     'institution_trajectories', 'settlement_states', 'choice_bins',
@@ -936,7 +938,10 @@ function applyAquariumLiveDelta(delta) {
   // 捨てない。upsertだけを反映し、埋め込みHTMLと同じ上限で切る。
   const nextTurns = applyKeyedAquariumPatch(
     DATA.turns, delta.turns, 't', true).slice(-AQUARIUM_LIVE_HISTORY_LIMIT);
-  const entityKeys = {npcs: 'name', residents: 'id', households: 'id'};
+  const entityKeys = {
+    npcs: 'name', residents: 'id', households: 'id',
+    resident_relationships: 'id',
+  };
   const nextEntities = {};
   for (const name of Object.keys(entityKeys)) {
     if (delta.entities[name]) {
@@ -1452,6 +1457,9 @@ const LIVELIHOOD_COLORS = {
 };
 const LIVELIHOOD_JA = {
   food: '食料づくり', medicine: '医療と薬', shelter: '住まいの手入れ', tools: '道具づくり',
+};
+const RESIDENT_RELATIONSHIP_COLORS = {
+  kin: '#8b9b96', organization: '#76a9bd', barter: '#d2a357',
 };
 
 function rgbFromHex(hex) {
@@ -3059,6 +3067,7 @@ function buildAquariumParticleScene(width, height, turn, focusId) {
   const returnPhases = new Float32Array(capacity);
   returnPhases.fill(1);
   const dynamic = [];
+  const residentIndexById = new Map();
   let particleCount = 0;
   let focusIndex = -1;
   if (packedFrame) {
@@ -3068,6 +3077,7 @@ function buildAquariumParticleScene(width, height, turn, focusId) {
       if (!person || !site) {
         throw new RangeError('particle packet refers to missing resident or site');
       }
+      residentIndexById.set(person.id, index);
       if (packedFrame.activityModes) {
         activityModes[index] = packedFrame.activityModes[index];
         departurePhases[index] = packedFrame.schedules[index * 2] / 255;
@@ -3107,6 +3117,7 @@ function buildAquariumParticleScene(width, height, turn, focusId) {
           ?? LIVELIHOOD_CODE.get('unknown');
         const activeNow = person.last_activity_turn === turn;
         particleResidents[index] = person;
+        residentIndexById.set(person.id, index);
         siteIndices[index] = siteIndex;
         memberIndices[index] = memberIndex;
         activityCodes[index] = activityCode;
@@ -3162,6 +3173,31 @@ function buildAquariumParticleScene(width, height, turn, focusId) {
   }
   ParticleRaster.finalize(raster);
 
+  const relationshipEdges = (DATA.resident_relationships || [])
+    .filter(row => Number(row.formed_turn ?? 0) <= turn)
+    .map(row => ({
+      ...row,
+      aIndex: residentIndexById.get(row.a) ?? -1,
+      bIndex: residentIndexById.get(row.b) ?? -1,
+    }))
+    .filter(row => row.aIndex >= 0 && row.bIndex >= 0);
+  const relationshipGroupMap = new Map();
+  relationshipEdges.forEach(edge => {
+    const kinds = edge.kinds || [];
+    const primaryKind = kinds.includes('barter') ? 'barter'
+      : (kinds.includes('organization') ? 'organization' : 'kin');
+    const strengthBand = Math.round(
+      clamp(Number(edge.strength || 0) / 100, 0, 1) * 4);
+    const key = `${primaryKind}:${strengthBand}`;
+    const group = relationshipGroupMap.get(key) || {
+      color: RESIDENT_RELATIONSHIP_COLORS[primaryKind],
+      alpha: 0.035 + strengthBand / 4 * 0.13,
+      edges: [],
+    };
+    group.edges.push(edge);
+    relationshipGroupMap.set(key, group);
+  });
+
   const particleLayer = canvasLayer(width, height);
   particleLayer.getContext('2d').putImageData(
     new ImageData(raster.rgba, width, height), 0, 0);
@@ -3199,6 +3235,7 @@ function buildAquariumParticleScene(width, height, turn, focusId) {
       return flags;
     })(),
     dynamicHits: [], dynamicPointByIndex: new Map(),
+    relationshipEdges, relationshipGroups: [...relationshipGroupMap.values()],
     anonymousDynamicHits: [], anonymousDynamicHitByPixel: new Map(),
     maxVisibleAnonymousPerPixel: raster.maxAnonymousPerPixel,
     lastWallSeconds: 0,
@@ -3567,6 +3604,43 @@ function renderDynamicResidents(ctx, scene, wallSeconds) {
       ? 1 : Math.min(0.96, 0.7 + Math.log2(count + 1) * 0.09);
     ctx.fillRect(row.x, row.y, 1, 1);
   });
+  ctx.globalAlpha = 1;
+}
+
+function drawResidentRelationships(ctx, scene) {
+  ctx.lineWidth = 1;
+  for (const group of scene.relationshipGroups || []) {
+    ctx.strokeStyle = group.color;
+    ctx.globalAlpha = group.alpha;
+    ctx.beginPath();
+    let visible = 0;
+    for (const edge of group.edges) {
+      const left = particlePoint(scene, edge.aIndex);
+      const right = particlePoint(scene, edge.bIndex);
+      if (!left || !right || (left.x === right.x && left.y === right.y)) continue;
+      ctx.moveTo(left.x + 0.5, left.y + 0.5);
+      ctx.lineTo(right.x + 0.5, right.y + 0.5);
+      visible++;
+    }
+    if (visible) ctx.stroke();
+  }
+  if (aquariumSelectedResident) {
+    ctx.strokeStyle = '#e4eee9';
+    ctx.globalAlpha = 0.72;
+    ctx.beginPath();
+    let visible = 0;
+    for (const edge of scene.relationshipEdges || []) {
+      if (edge.a !== aquariumSelectedResident
+          && edge.b !== aquariumSelectedResident) continue;
+      const left = particlePoint(scene, edge.aIndex);
+      const right = particlePoint(scene, edge.bIndex);
+      if (!left || !right || (left.x === right.x && left.y === right.y)) continue;
+      ctx.moveTo(left.x + 0.5, left.y + 0.5);
+      ctx.lineTo(right.x + 0.5, right.y + 0.5);
+      visible++;
+    }
+    if (visible) ctx.stroke();
+  }
   ctx.globalAlpha = 1;
 }
 
@@ -3959,6 +4033,7 @@ function renderPixelAquarium(animationNow=performance.now()) {
   renderAnonymousActivityDrifts(ctx, scene, wallSeconds);
   renderAnonymousIndividuals(ctx, scene, wallSeconds);
   renderDynamicResidents(ctx, scene, wallSeconds);
+  drawResidentRelationships(ctx, scene);
   renderGenerationFlows(ctx, scene, wallSeconds);
   const visibleLabel = scene.visibleParticleCount !== scene.particleCount
     ? ` · 表示${scene.visibleParticleCount.toLocaleString()}人` : '';
@@ -3984,6 +4059,7 @@ function renderPixelAquarium(animationNow=performance.now()) {
           ? `（準備中）` : '')
       : '')
     + ` · 組織${observed.organization_count ?? DATA.meta.organization_count ?? 0}`
+    + ` · 関係${scene.relationshipEdges.length.toLocaleString()}`
     + ` · 構築${scene.buildMilliseconds.toFixed(1)}ms`
     + (aquariumRenderMilliseconds
       ? ` · 描画${aquariumRenderMilliseconds.toFixed(1)}ms`
@@ -4053,6 +4129,8 @@ function renderPixelAquarium(animationNow=performance.now()) {
     + (clusterEvents.length ? ` · 今月の集落変化${clusterEvents.length}件` : '')
     + (scene.generationFlows.length
       ? ` · 今月の世代継承${scene.generationFlows.length}件` : '')
+    + (scene.relationshipEdges.length
+      ? ` · 実在関係${scene.relationshipEdges.length.toLocaleString()}本` : '')
     + (focus ? ` · 観察中 ${focus.name}` : '')
     + (selected ? ` · 選択 ${selected.resident.name}` : '');
   const animate = !field.persistent || scene.flows.length
@@ -4185,6 +4263,13 @@ function setupPixelAquarium() {
     const barterLine = residentDetail
       ? `<br>世帯間交換 ${Number(householdGoods.barter_exchange_count || 0)}件`
       : '';
+    const relationshipLine = `<br>住民関係 ${Number(
+      resident.relationship_count || 0)}本 · 強い関係 ${Number(
+      resident.strong_relationship_count || 0)}本`
+      + (residentDetail?.relationships?.length
+        ? `<br>主な相手 ${residentDetail.relationships.slice(0, 3).map(row =>
+            `${escapeHtml(row.other_resident_name || row.other_resident_id)}(${fmtValue(row.strength)})`).join('・')}`
+        : '');
     tooltip.innerHTML =
       `${escapeHtml(resident.name)}<br>${escapeHtml(hit.site.name || '世帯不明')} · ${escapeHtml(settlementName)}`
       + `<br>${escapeHtml(LIVELIHOOD_JA[hit.activity] || hit.activity || '生業未記録')} · 第${Number(resident.generation || 0)}世代`
@@ -4197,7 +4282,7 @@ function setupPixelAquarium() {
         : (hit.clusterId
           ? `<br>活動集落 ${escapeHtml(hit.clusterId)}` : ''))
       + (hit.density > 1 ? `<br>同じpixelに${hit.density}人 · 色を合成` : '')
-      + responseLine + holdingsLine + barterLine
+      + responseLine + holdingsLine + barterLine + relationshipLine
       + (parentNames.length ? `<br>親 ${parentNames.map(escapeHtml).join('・')}` : '');
     tooltip.style.display = 'block';
     tooltip.style.left =
@@ -4429,6 +4514,11 @@ function renderVitals() {
   ].map(([label, key]) => `${label}${fmtValue(householdBarterVolume[key] ?? 0)}`).join(' · ');
   const householdBarterCount = observed?.world_household_barter_exchange_count
     ?? m.world_household_barter_exchange_count ?? 0;
+  const relationshipCount = observed?.world_resident_relationship_count
+    ?? m.resident_relationship_count ?? 0;
+  const crossCommunityRelationshipCount =
+    observed?.world_cross_community_relationship_count
+      ?? m.cross_community_relationship_count ?? 0;
   const focusHouseholdGoods = observed?.focus_household_goods || {};
   const focusHouseholdCoverage = observed?.focus_household_goods_coverage_by_good || {};
   const focusHouseholdGoodsText = [
@@ -4465,6 +4555,7 @@ function renderVitals() {
       <div class="vital"><span class="label">経験による生産倍率</span><span class="value">${productivityByGood}</span></div>
       <div class="vital"><span class="label">他活動可能</span><span class="value">${m.activity_unassigned_productive_total ?? 0}人</span></div>
       <div class="vital"><span class="label">組織</span><span class="value">${observed?.organization_count ?? m.organization_count ?? 0}</span></div>
+      <div class="vital"><span class="label">住民関係</span><span class="value">${Number(relationshipCount).toLocaleString()}本${Number(crossCommunityRelationshipCount) ? ` · 集落間${Number(crossCommunityRelationshipCount).toLocaleString()}本` : ''}</span></div>
       <div class="vital"><span class="label">焦点人物</span><span class="value">${escapeHtml(observed?.focus_resident_name || '—')}</span></div>
       <div class="vital"><span class="label">世帯</span><span class="value">${escapeHtml(observed?.focus_household_name || '—')}</span></div>
       <div class="vital"><span class="label">世帯の保有財</span><span class="value">${focusHouseholdGoodsText}</span></div>
@@ -4580,6 +4671,10 @@ function observationEvents(row) {
       const volume = Object.values(event.volume_by_good || {})
         .reduce((sum, value) => sum + Number(value || 0), 0);
       return `${escapeHtml(place)}で${Number(event.exchange_count || 0)}組の欲求が一致し、財 ${fmtValue(volume)}を即時交換した`;
+    }
+    if (event.kind === 'resident_relationship_summary') {
+      const interactions = event.interactions_by_kind || {};
+      return `住民関係が${Number(event.formed_count || 0)}本生まれ、${Number(event.reinforced_count || 0)}本が深まり、${Number(event.ended_count || 0)}本が終わった（親族${Number(interactions.kin || 0)}・共働${Number(interactions.organization || 0)}・交換${Number(interactions.barter || 0)}）`;
     }
     if (event.kind === 'character_died') return `${event.resident_name ? escapeHtml(event.resident_name) : `第${event.generation || '?'}世代の人物`}が死亡した（集落人口 ${event.population_after ?? '—'}）`;
     if (event.kind === 'successor_selected') {
@@ -5135,10 +5230,11 @@ function renderResidentHouseholds() {
       <td>${row.last_activity_turn !== null && row.last_activity_turn <= observedTurn
         ? escapeHtml(LIVELIHOOD_JA[row.last_activity] || row.last_activity || '—') : '—'}</td>
       <td class="num">${activityCountText(row)}</td>
+      <td class="num" title="強度50以上 ${Number(row.strong_relationship_count || 0)}本・最強 ${fmtValue(row.strongest_relationship_strength || 0)}">${Number(row.relationship_count || 0)}本</td>
       <td>${focus ? '観察中 / ' : ''}${aliveAtTurn ? '生存' : '死去'}</td>
       <td>${escapeHtml(originWords[row.origin] || row.origin || '—')}</td>
     </tr>`;
-  }).join('') : '<tr><td colspan="8">住民台帳の記録なし</td></tr>';
+  }).join('') : '<tr><td colspan="9">住民台帳の記録なし</td></tr>';
 
   householdBody.innerHTML = shownHouseholds.length ? shownHouseholds.map(row => {
     const communityCounts = householdCommunityCounts.get(row.id) || new Map();
@@ -5153,19 +5249,22 @@ function renderResidentHouseholds() {
       <td class="num">${goodsText(row.goods_holdings)}</td>
       <td class="num">${goodsText(row.goods_coverage_by_good)}</td>
       <td class="num">${householdBarterText(row)}</td>
+      <td class="num">${Number(row.relationship_count || 0)}本</td>
       <td>${escapeHtml(migrationText(row))}</td>
       <td class="num">${row.living_members}</td>
       <td>${row.last_activity_turn !== null && row.last_activity_turn <= observedTurn
         ? `${escapeHtml(lastActorNames.get(row.last_actor_id) || '—')} / T${row.last_activity_turn}` : '—'}</td>
       <td>${row.member_names.length ? row.member_names.map(escapeHtml).join('・') : '—'}</td>
     </tr>`;
-  }).join('') : '<tr><td colspan="12">世帯台帳の記録なし</td></tr>';
+  }).join('') : '<tr><td colspan="13">世帯台帳の記録なし</td></tr>';
   document.getElementById('resident-count-note').textContent =
     `${visibleResidentCount.toLocaleString()}人記録` +
     (visibleResidentCount > visibleResidents.length
       ? `（表は${visibleResidents.length.toLocaleString()}人）` : '') + ' / ' +
     `${observed?.living_resident_count ?? DATA.meta.living_resident_count ?? 0}人生存 / ` +
     `${observed?.active_household_count ?? DATA.meta.household_count ?? 0}世帯` +
+    ` / 関係${Number(observed?.world_resident_relationship_count
+      ?? DATA.meta.resident_relationship_count ?? 0).toLocaleString()}本` +
     (householdRows.length > shownHouseholds.length
       ? `（表は${shownHouseholds.length.toLocaleString()}世帯）` : '');
 }

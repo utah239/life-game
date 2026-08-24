@@ -51,6 +51,7 @@ ACTIVITY_GOODS = ("food", "medicine", "shelter", "tools")
 WORKFORCE_ORGANIZATION_KINDS = frozenset((
     "company", "guild", "family_workshop"))
 HOUSEHOLD_GOODS = ("food", "medicine", "shelter", "tools")
+DASHBOARD_RELATIONSHIP_EDGE_LIMIT = 4096
 
 
 def _household_goods_coverage(state: dict, needs_state: dict,
@@ -448,13 +449,82 @@ def attach_npc_introductions(npc_rows: list, trace_npc_introductions: list) -> N
         row["introduced"] = by_name.get(row["name"])
 
 
+def _relationship_projection(
+        relationship_state: dict | None, registry: dict) -> tuple[list, dict, dict]:
+    """実在する関係だけを描画用edgeと住民・世帯別集計へ軽量化する。"""
+    records = (relationship_state or {}).get("relationships", {})
+    resident_records = (registry or {}).get("residents", {})
+    resident_summaries: dict[str, dict] = {}
+    household_edge_ids: dict[str, set[str]] = {}
+    projected = []
+    for edge_id, relationship in records.items():
+        left_id = str(relationship.get("resident_a_id"))
+        right_id = str(relationship.get("resident_b_id"))
+        left = resident_records.get(left_id)
+        right = resident_records.get(right_id)
+        if left is None or right is None:
+            continue
+        strength = round3(relationship.get("strength", 0.0))
+        kinds = list(relationship.get("kinds", ()))
+        projected.append({
+            "id": str(edge_id),
+            "a": left_id,
+            "b": right_id,
+            "strength": strength,
+            "kinds": kinds,
+            "formed_turn": relationship.get("formed_turn"),
+            "_last_interaction_turn": relationship.get(
+                "last_interaction_turn"),
+            "settlement_id": relationship.get("settlement_id"),
+        })
+        for resident_id in (left_id, right_id):
+            summary = resident_summaries.setdefault(resident_id, {
+                "relationship_count": 0,
+                "strong_relationship_count": 0,
+                "strongest_relationship_strength": 0.0,
+            })
+            summary["relationship_count"] += 1
+            summary["strong_relationship_count"] += strength >= 50.0
+            summary["strongest_relationship_strength"] = max(
+                summary["strongest_relationship_strength"], strength)
+        left_household = str(left.get("household_id"))
+        right_household = str(right.get("household_id"))
+        household_edge_ids.setdefault(left_household, set()).add(str(edge_id))
+        household_edge_ids.setdefault(right_household, set()).add(str(edge_id))
+
+    # 制度を横断する辺を先に残し、その中では強く新しい関係を優先する。
+    # ここで作るのは既存辺のboundedな表示投影であり、関係を補間・捏造しない。
+    projected.sort(key=lambda row: (
+        not any(kind != "kin" for kind in row["kinds"]),
+        -float(row["strength"]),
+        -int(row["_last_interaction_turn"] or -1),
+        row["id"],
+    ))
+    household_summaries = {
+        household_id: {"relationship_count": len(edge_ids)}
+        for household_id, edge_ids in household_edge_ids.items()
+    }
+    selected = projected[:DASHBOARD_RELATIONSHIP_EDGE_LIMIT]
+    for row in selected:
+        row.pop("_last_interaction_turn", None)
+    return (
+        selected,
+        resident_summaries,
+        household_summaries,
+    )
+
+
 def build_residents(registry: dict, current_turn: int,
                     focus_resident_id: str | None,
                     household_goods_state: dict | None = None,
                     household_needs_state: dict | None = None,
-                    household_agency_state: dict | None = None) -> tuple[list, list]:
+                    household_agency_state: dict | None = None,
+                    resident_relationship_state: (
+                        dict | None) = None) -> tuple[list, list]:
     """永続住民台帳を、現在の住民・世帯テーブル用に整形する。"""
     household_records = registry.get("households", {}) if registry else {}
+    _, resident_relationships, household_relationships = (
+        _relationship_projection(resident_relationship_state, registry))
     residents = []
     members_by_household = {}
     for resident_id, resident in (registry.get("residents", {}).items()
@@ -488,6 +558,11 @@ def build_residents(registry: dict, current_turn: int,
                 "unclassified_activity_count", 0),
             "last_activity_turn": resident.get("last_activity_turn"),
             "last_activity": resident.get("last_activity"),
+            **resident_relationships.get(resident_id, {
+                "relationship_count": 0,
+                "strong_relationship_count": 0,
+                "strongest_relationship_strength": 0.0,
+            }),
         }
         residents.append(row)
         members_by_household.setdefault(row["household_id"], []).append(row)
@@ -562,6 +637,8 @@ def build_residents(registry: dict, current_turn: int,
             "response_shortfall_by_good": {
                 key: round3(value) for key, value in agency_account.get(
                     "shortfall_by_good", {}).items()},
+            "relationship_count": int(household_relationships.get(
+                str(household_id), {}).get("relationship_count", 0)),
         })
     households.sort(key=lambda row: (
         not row["active"], row["settlement_id"] or "", row["id"]))
@@ -578,7 +655,9 @@ def build_observer_events(turns: list, settlements: list, npcs: list,
                           spatial_events: list | None = None,
                           organization_events: list | None = None,
                           household_goods_events: list | None = None,
-                          household_agency_events: list | None = None) -> list:
+                          household_agency_events: list | None = None,
+                          resident_relationship_events: (
+                              list | None) = None) -> list:
     """観察再生でその月までに起きたことだけを表示するための構造化イベント。
 
     トレースの最終状態をブラウザ側で逆算させず、Stage差分・NPC初登場・契約清算・
@@ -717,6 +796,17 @@ def build_observer_events(turns: list, settlements: list, npcs: list,
         })
         sequence += 1
 
+    for event in resident_relationship_events or ():
+        if event.get("kind") != "resident_relationship_summary":
+            continue
+        events.append({
+            "t": event["turn"], "kind": event["kind"],
+            **{key: value for key, value in event.items()
+               if key not in ("turn", "kind")},
+            "_sequence": sequence,
+        })
+        sequence += 1
+
     if death_turn is not None and not character_events:
         events.append({
             "t": death_turn, "kind": "character_died", "_sequence": sequence,
@@ -793,7 +883,11 @@ def build_dashboard_data(trace_data: dict, bin_count: int = DEFAULT_BIN_COUNT) -
         trace_data.get("focus_resident_id"),
         trace_data.get("household_goods_state"),
         trace_data.get("household_needs_state"),
-        trace_data.get("household_agency_state"))
+        trace_data.get("household_agency_state"),
+        trace_data.get("resident_relationship_state"))
+    relationship_state = trace_data.get("resident_relationship_state", {})
+    resident_relationships, _, _ = _relationship_projection(
+        relationship_state, trace_data.get("resident_registry", {}))
     spatial_state = trace_data.get("spatial_state", {})
     particle_frame = build_particle_packet(residents, spatial_state, max_turn)
     particle_cohorts = build_particle_cohorts(
@@ -842,7 +936,8 @@ def build_dashboard_data(trace_data: dict, bin_count: int = DEFAULT_BIN_COUNT) -
         spatial_state.get("cluster_events"),
         trace_data["trace"].get("organization_events"),
         trace_data["trace"].get("household_goods_events"),
-        trace_data["trace"].get("household_agency_events"))
+        trace_data["trace"].get("household_agency_events"),
+        trace_data["trace"].get("resident_relationship_events"))
     resident_total = len(residents) + int(trace_data.get(
         "resident_registry", {}).get("archived_resident_count", 0))
     named_living_resident_count = sum(
@@ -946,6 +1041,20 @@ def build_dashboard_data(trace_data: dict, bin_count: int = DEFAULT_BIN_COUNT) -
                 0, latest_population - named_living_resident_count),
             "household_count": sum(
                 1 for household in households if household["active"]),
+            "resident_relationship_count": int(relationship_state.get(
+                "world_relationship_count", 0)),
+            "resident_relationship_projection_count": len(
+                resident_relationships),
+            "resident_relationship_projection_omitted_count": max(
+                0, int(relationship_state.get(
+                    "world_relationship_count", 0))
+                - len(resident_relationships)),
+            "cross_community_relationship_count": int(
+                relationship_state.get(
+                    "world_cross_community_relationship_count", 0)),
+            "relationship_interactions_by_kind": {
+                key: int(value) for key, value in relationship_state.get(
+                    "world_interactions_by_kind", {}).items()},
             "focus_resident_id": trace_data.get("focus_resident_id"),
             "particle_packet_version": (
                 particle_frame.get("version") if particle_frame else None),
@@ -1083,6 +1192,7 @@ def build_dashboard_data(trace_data: dict, bin_count: int = DEFAULT_BIN_COUNT) -
         "npcs": npcs,
         "residents": residents,
         "households": households,
+        "resident_relationships": resident_relationships,
         "spatial_state": dashboard_spatial_state,
         "particle_frame": particle_frame,
         "particle_cohorts": particle_cohorts,

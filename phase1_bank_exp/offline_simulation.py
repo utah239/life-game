@@ -91,6 +91,12 @@ from institutions.household_agency import (
     verify_household_agency_state,
 )
 from institutions.household_mobility import plan_household_migration
+from institutions.resident_relationships import (
+    household_relationship_support,
+    initial_resident_relationship_state,
+    plan_resident_relationships,
+    upgrade_resident_relationship_state,
+)
 from institutions.activity_communities import (
     ACTIVITY_COMMUNITY_ACCOUNTING_VERSION,
     build_activity_community_ledger,
@@ -546,6 +552,11 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
         household_agency_state = upgrade_household_agency_state(state.get(
             "household_agency_state", initial_household_agency_state(
                 int(state.get("completed_turn", 0)))))
+        resident_relationship_state = upgrade_resident_relationship_state(
+            state.get(
+                "resident_relationship_state",
+                initial_resident_relationship_state(
+                    int(state.get("completed_turn", 0)))))
         focus_resident_id = state.get("focus_resident_id")
         population_tracking = state["population_tracking"]
         generation = state["generation"]
@@ -626,6 +637,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
         organization_state = initial_organization_state()
         household_goods_state = initial_household_goods_state()
         household_agency_state = initial_household_agency_state()
+        resident_relationship_state = initial_resident_relationship_state()
         focus_resident_id = (select_focus_resident(
             resident_registry, focus_settlement_id, 1)
             if continue_world else None)
@@ -915,19 +927,33 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             trace.setdefault("household_agency_events", []).extend(
                 copy.deepcopy(events))
 
+    def _record_resident_relationship_events(events: list[dict]) -> None:
+        if trace is not None and events:
+            trace.setdefault("resident_relationship_events", []).extend(
+                copy.deepcopy(events))
+
     def _sync_household_agency() -> None:
         """確定済みの財内訳から、共用アクセスと次月の世帯対応を決める。"""
         nonlocal household_agency_state, household_goods_state
+        nonlocal resident_relationship_state
         if not continue_world:
             return
+        relationship_support = household_relationship_support(
+            resident_relationship_state, resident_registry)
         planned = plan_household_agency(
             household_agency_state, household_goods_state, settlements,
             resident_registry, household_needs_state, organization_state,
-            turn, barter_active=barter_active)
+            turn, barter_active=barter_active,
+            relationship_support_by_household=relationship_support)
         household_agency_state = planned["state"]
         household_goods_state = planned["household_goods_state"]
+        relationships = plan_resident_relationships(
+            resident_relationship_state, resident_registry,
+            organization_state, planned["relationship_routes"], turn)
+        resident_relationship_state = relationships["state"]
         _record_household_goods_events(planned["household_goods_events"])
         _record_household_agency_events(planned["events"])
+        _record_resident_relationship_events(relationships["events"])
 
     def _apply_previous_organization_effects() -> dict:
         """前月末の組織が生む協調余剰を今月へ1回だけ適用する。"""
@@ -1230,6 +1256,15 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                 "world_household_barter_exchange_count": int(
                     household_goods_state.get(
                         "world_household_barter_exchange_count", 0)),
+                "world_resident_relationship_count": int(
+                    resident_relationship_state.get(
+                        "world_relationship_count", 0)),
+                "world_cross_community_relationship_count": int(
+                    resident_relationship_state.get(
+                        "world_cross_community_relationship_count", 0)),
+                "world_relationship_interactions_by_kind": dict(
+                    resident_relationship_state.get(
+                        "world_interactions_by_kind", {})),
                 "living_resident_count": living_population_count(
                     resident_registry),
                 "named_living_resident_count": len(living_residents(
@@ -1390,6 +1425,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
         trace.setdefault("organization_effects", [])
         trace.setdefault("household_goods_events", [])
         trace.setdefault("household_agency_events", [])
+        trace.setdefault("resident_relationship_events", [])
 
     def _record_current_turn_once() -> None:
         """世代交代/世界終端で通常のloop末尾へ到達しないターンを1回記録する。"""
@@ -2658,6 +2694,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             "household_needs_state": household_needs_state,
             "household_goods_state": household_goods_state,
             "household_agency_state": household_agency_state,
+            "resident_relationship_state": resident_relationship_state,
             "focus_resident_id": focus_resident_id,
             "population_stage": population_stage,
             "population_tracking": population_tracking,
@@ -2701,6 +2738,7 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             "household_needs_state": household_needs_state,
             "household_goods_state": household_goods_state,
             "household_agency_state": household_agency_state,
+            "resident_relationship_state": resident_relationship_state,
             "focus_resident_id": focus_resident_id,
             "population_stage": population_stage,
             "generation": generation,
@@ -3410,7 +3448,8 @@ def collect_visualize_trace(seed: int, policy_name: str, turns: int, safety_floo
                  "resident_events": [], "spatial_keyframes": [],
                  "organization_events": [], "organization_effects": [],
                  "household_goods_events": [],
-                 "household_agency_events": []}
+                 "household_agency_events": [],
+                 "resident_relationship_events": []}
     else:
         # 永続水槽は過去のtraceへ今回区間を追記する。呼び出し側が古いschemaの
         # traceを渡しても、追加済みのイベントstreamだけ安全に補う。
@@ -3418,7 +3457,8 @@ def collect_visualize_trace(seed: int, policy_name: str, turns: int, safety_floo
                      "npc_events", "character_events", "population_events",
                      "trade_events", "resident_events", "spatial_keyframes",
                      "organization_events", "organization_effects",
-                     "household_goods_events", "household_agency_events"):
+                     "household_goods_events", "household_agency_events",
+                     "resident_relationship_events"):
             trace.setdefault(name, [])
     resume_kwargs = ({"resume_state": resume_state}
                      if resume_state is not None else {})
@@ -3491,6 +3531,9 @@ def collect_visualize_trace(seed: int, policy_name: str, turns: int, safety_floo
                 "household_goods_state", initial_household_goods_state()),
             "household_agency_state": r.get(
                 "household_agency_state", initial_household_agency_state()),
+            "resident_relationship_state": r.get(
+                "resident_relationship_state",
+                initial_resident_relationship_state()),
             "focus_resident_id": r.get("focus_resident_id"),
         })
         focus_id = r.get("focus_settlement_id", HOME_SETTLEMENT_ID)
