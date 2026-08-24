@@ -56,10 +56,12 @@ class ResidentRelationshipRulesTest(unittest.TestCase):
         self.assertEqual(state["world_relationship_count"], 5)
         self.assertEqual(
             state["communities"]["a"]["relationship_counts_by_kind"],
-            {"kin": 3, "organization": 1, "barter": 1})
+            {"kin": 3, "organization": 1, "barter": 1,
+             "mutual_aid": 0})
         self.assertEqual(
             state["world_interactions_by_kind"],
-            {"kin": 3, "organization": 1, "barter": 1})
+            {"kin": 3, "organization": 1, "barter": 1,
+             "mutual_aid": 0})
         self.assertEqual(result["events"][0]["formed_count"], 5)
         self.assertTrue(
             resident_relationships.verify_resident_relationship_state(

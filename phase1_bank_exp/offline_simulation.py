@@ -944,12 +944,14 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
             household_agency_state, household_goods_state, settlements,
             resident_registry, household_needs_state, organization_state,
             turn, barter_active=barter_active,
-            relationship_support_by_household=relationship_support)
+            relationship_support_by_household=relationship_support,
+            resident_relationship_state=resident_relationship_state)
         household_agency_state = planned["state"]
         household_goods_state = planned["household_goods_state"]
         relationships = plan_resident_relationships(
             resident_relationship_state, resident_registry,
-            organization_state, planned["relationship_routes"], turn)
+            organization_state, planned["relationship_routes"], turn,
+            mutual_aid_routes=planned["mutual_aid_routes"])
         resident_relationship_state = relationships["state"]
         _record_household_goods_events(planned["household_goods_events"])
         _record_household_agency_events(planned["events"])
@@ -1256,6 +1258,12 @@ def simulate_policy(policy_name: str, turns: int, seed: int, safety_floor: int,
                 "world_household_barter_exchange_count": int(
                     household_goods_state.get(
                         "world_household_barter_exchange_count", 0)),
+                "world_household_mutual_aid_volume_by_good": dict(
+                    household_goods_state.get(
+                        "world_household_mutual_aid_volume_by_good", {})),
+                "world_household_mutual_aid_transfer_count": int(
+                    household_goods_state.get(
+                        "world_household_mutual_aid_transfer_count", 0)),
                 "world_resident_relationship_count": int(
                     resident_relationship_state.get(
                         "world_relationship_count", 0)),
