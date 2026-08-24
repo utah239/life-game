@@ -727,6 +727,30 @@ class AquariumManager:
                     "asset_claim_total", 0.0),
             })
         organization_rows.sort(key=lambda row: str(row["id"]))
+        relationship_rows = []
+        for relationship in checkpoint.get(
+                "resident_relationship_state", {}).get(
+                    "relationships", {}).values():
+            endpoints = (
+                str(relationship.get("resident_a_id")),
+                str(relationship.get("resident_b_id")),
+            )
+            if resident_id not in endpoints:
+                continue
+            other_id = endpoints[1] if endpoints[0] == resident_id else endpoints[0]
+            other = registry.get("residents", {}).get(other_id, {})
+            relationship_rows.append({
+                "id": relationship.get("id"),
+                "other_resident_id": other_id,
+                "other_resident_name": other.get("name", other_id),
+                "strength": relationship.get("strength", 0.0),
+                "kinds": list(relationship.get("kinds", ())),
+                "formed_turn": relationship.get("formed_turn"),
+                "last_interaction_turn": relationship.get(
+                    "last_interaction_turn"),
+            })
+        relationship_rows.sort(key=lambda row: (
+            -float(row["strength"]), str(row["id"])))
         return {
             "revision": world.get("revision", 0),
             "turn": world.get("summary", {}).get("completed_turn"),
@@ -741,6 +765,8 @@ class AquariumManager:
             "site": dict(site) if site else None,
             "activity_community_id": cluster_id,
             "organizations": organization_rows,
+            "relationship_count": len(relationship_rows),
+            "relationships": relationship_rows[:64],
         }
 
     def frame_chunk(self, *, client_stream_id: str = None,

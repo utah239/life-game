@@ -819,10 +819,26 @@ class AquariumManagerTest(unittest.TestCase):
         self.assertTrue(all("asset_claims" in row
                             and "asset_claim_total" in row
                             for row in detail["organizations"]))
+        expected_relationships = [
+            row for row in world["checkpoint"][
+                "resident_relationship_state"]["relationships"].values()
+            if resident_id in (
+                row["resident_a_id"], row["resident_b_id"])]
+        self.assertEqual(
+            detail["relationship_count"], len(expected_relationships))
+        self.assertTrue(detail["relationships"])
+        self.assertTrue(all(
+            row["other_resident_id"] != resident_id
+            and row["other_resident_id"] in world["checkpoint"][
+                "resident_registry"]["residents"]
+            for row in detail["relationships"]))
         detail["resident"]["parent_ids"].append("changed-in-response")
+        detail["relationships"][0]["kinds"].append("changed-in-response")
         reread = self.manager.resident_detail(resident_id)
         self.assertNotIn(
             "changed-in-response", reread["resident"]["parent_ids"])
+        self.assertNotIn(
+            "changed-in-response", reread["relationships"][0]["kinds"])
         with self.assertRaises(KeyError):
             self.manager.resident_detail("r999999999")
         with self.assertRaisesRegex(ValueError, "too long"):
@@ -1049,6 +1065,11 @@ class AquariumStreamContractTest(unittest.TestCase):
                 {"id": "r2", "age": 20, "alive": True},
                 {"id": "r1", "age": 10, "alive": True}],
             "households": [{"id": "h1", "living_members": 2}],
+            "resident_relationships": [{
+                "id": "relationship:r1|r2", "a": "r1", "b": "r2",
+                "strength": 25.0, "kinds": ["organization"],
+                "formed_turn": 1, "settlement_id": "a",
+            }],
             "spatial_state": static_spatial,
             "spatial_history": {
                 "version": 1, "source_frame_count": 1,
@@ -1064,6 +1085,12 @@ class AquariumStreamContractTest(unittest.TestCase):
             {"id": "r3", "age": 0, "alive": True},
             {"id": "r2", "age": 20.1, "alive": True}]
         after_data["households"][0]["living_members"] = 3
+        after_data["resident_relationships"][0]["strength"] = 27.0
+        after_data["resident_relationships"].append({
+            "id": "relationship:r1|r3", "a": "r1", "b": "r3",
+            "strength": 35.0, "kinds": ["barter"],
+            "formed_turn": 2, "settlement_id": "a",
+        })
         after_data["spatial_history"] = {
             "version": 1, "source_frame_count": 2,
             "frames": [{"turn": 2, "value": "new"}]}
@@ -1087,6 +1114,10 @@ class AquariumStreamContractTest(unittest.TestCase):
             aquarium_stream.apply_keyframe_delta(
                 first["keyframe"], second["keyframe_delta"]),
             second["keyframe"])
+        relationship_patch = second["keyframe_delta"]["entities"][
+            "resident_relationships"]
+        self.assertEqual(len(relationship_patch["patch"]), 1)
+        self.assertEqual(len(relationship_patch["upsert"]), 1)
         delta_chunk = aquarium_stream.stream_chunk(
             second, client_stream_id="delta-world", client_revision=1,
             after_sequence=100)

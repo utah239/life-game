@@ -38,6 +38,9 @@ NPCの信頼グラフ・契約の重み(金額)、NPC関係/イベントのロ�
 4. `trace["npc_events"]`: 名前付きNPCの自然死。年齢・原因・死亡で孤児化した契約IDを含む。
 5. `trace["character_events"]`: 焦点人物の死亡と後継世代への切替。
 6. `trace["population_events"]`: 集落人口の出生・背景死亡・Stage遷移・絶滅。
+7. `trace["resident_relationship_events"]`: 親族・当月組織参加・成立済み交換から
+   関係が形成・強化・終了した月次summary。個別辺の正本はcheckpointの
+   `resident_relationship_state`へ置き、traceにはboundedなID標本だけを載せる。
 
 既存の`agree_log`(各意思決定点で3方針それぞれが何を選んだかの記録)はそのまま「選択タイムライン」
 として再利用する——新規の計測は追加しない。
@@ -422,7 +425,7 @@ frame_chunk = {
   新世界開始、旧serverとの混在fallback、明示的な再同期だけがHTML読込境界になる。
 - serverの計算中も、atomicに確定済みのstatus/keyframe/住民詳細を更新lock無しで読める。
 - revision差分の第2縦断も完了した。初回・別stream・古いcursorには完全keyframe、直前revisionには
-  schema付き`keyframe_delta`を返す。deltaはturn upsert、NPC/住民/世帯の追加・削除・フィールドpatch・
+  schema付き`keyframe_delta`を返す。deltaはturn upsert、NPC/住民/世帯/住民関係辺の追加・削除・フィールドpatch・
   順序、イベントtail、空間履歴patch、変更された現在値だけを持つ。1920か月世界の1か月更新は
   約276KB(完全keyframeの17.5%)で、serverの参照適用結果が次keyframeと完全一致した。
   clientはrevisionを適用前に検証し、不整合ならcursorを捨てて完全keyframeから再同期する。破損した
@@ -490,6 +493,19 @@ claimを世界の財へ再加算せず、共同体別在庫を上限に縮小し
 現在claim・取得累計・共同体分配累計は月次snapshot/live summaryへ、組織別claimは住民詳細APIの所属組織へ
 載せる。これは描画専用の属性ではなく最大15%の組織効果補正を持つ数値状態だが、Canvas上の組織記号を
 独立した財粒子として増やすものではない。
+
+### M. 住民関係グラフの空間表示 — 第1縦断完了
+
+`resident_relationship_state` v1は、同一世帯、同じ組織の当月参加、成立済みの名前付き
+世帯間交換という実接触だけを辺へする。端点は最大4096人の名前付き標本に限り、非親族次数8、
+世界16,384本を上限として匿名cohortを個体化しない。死亡・移住・接触停止は同じcheckpointへ
+反映され、JSONを挟む分割再開でも状態・RNG・traceがone-shotと一致する。
+
+dashboardは正本から最大4,096本を選び、親族・共働・交換を色分けした細線として、同じ
+particle packetが持つ実在住民座標間へ描く。補間した相手や架空の辺は作らない。全辺数、
+集落間辺数、種別別接触累計は月次snapshotとlive summaryへ、形成・強化・終了はobserverへ、
+住民別次数と主な相手は表・tooltip・住民詳細APIへ載せる。live keyframe deltaは辺ID単位で
+追加・更新・削除するため、HTML全体を再読込しない。
 
 ## 変更対象ファイル
 
