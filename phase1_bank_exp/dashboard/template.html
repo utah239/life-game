@@ -606,7 +606,7 @@
       <div class="npc-table-wrap">
         <table class="npc-table">
           <thead><tr>
-            <th>世帯</th><th>活動集落</th><th>生業</th><th>現在の対応</th><th>累積活動 食/薬/住/具</th><th>現在保有 食/薬/住/具</th><th>充足率 %</th><th>世帯間交換</th><th class="num">生存者</th><th>最近の担い手</th><th>構成員</th>
+            <th>世帯</th><th>活動集落</th><th>生業</th><th>現在の対応</th><th>累積活動 食/薬/住/具</th><th>現在保有 食/薬/住/具</th><th>充足率 %</th><th>世帯間交換</th><th>移住履歴</th><th class="num">生存者</th><th>最近の担い手</th><th>構成員</th>
           </tr></thead>
           <tbody id="household-table-body"></tbody>
         </table>
@@ -4540,7 +4540,9 @@ function observationEvents(row) {
       const to = DATA.settlement_states?.[event.to_settlement]?.name || event.to_settlement;
       const names = (event.residents || []).slice(0, 3).map(row => escapeHtml(row.name)).join('・');
       const rest = (event.residents || []).length > 3 ? `ほか${event.residents.length - 3}人` : '';
-      return `${escapeHtml(from)}から${escapeHtml(to)}へ${event.migrants}人が移住した${names ? `（${names}${rest ? `・${rest}` : ''}）` : ''}`;
+      const shortage = Number(event.shortage_migrant_count || 0);
+      const reason = shortage > 0 ? `。うち${shortage}人は世帯の長期不足に応じた移住` : '';
+      return `${escapeHtml(from)}から${escapeHtml(to)}へ${event.migrants}人が移住した${names ? `（${names}${rest ? `・${rest}` : ''}）` : ''}${reason}`;
     }
     if (event.kind === 'household_split') return `${escapeHtml(event.name)}が移住によって新しい世帯に分かれた`;
     if (event.kind === 'household_closed') return `${escapeHtml(event.name)}の生存者がいなくなった`;
@@ -5069,6 +5071,13 @@ function renderResidentHouseholds() {
   const responseText = row => row.priority_good
     ? `${LIVELIHOOD_JA[row.priority_good] || row.priority_good}優先（${Number(row.consecutive_shortage_months || 0)}か月）`
     : '通常';
+  const migrationText = row => {
+    if (!row.migration_count || row.last_migration_turn === null
+        || row.last_migration_turn > observedTurn) return '—';
+    const reason = row.last_migration_reason === 'persistent_household_shortage'
+      ? '長期不足' : '共同体圧力';
+    return `${Number(row.migration_count).toLocaleString()}回 / T${row.last_migration_turn} / ${reason}`;
+  };
   const focusId = observed?.focus_resident_id || DATA.meta.focus_resident_id;
   const originWords = {
     initial: '初期住民', legacy_snapshot: '旧世界引継ぎ', birth: '出生',
@@ -5144,12 +5153,13 @@ function renderResidentHouseholds() {
       <td class="num">${goodsText(row.goods_holdings)}</td>
       <td class="num">${goodsText(row.goods_coverage_by_good)}</td>
       <td class="num">${householdBarterText(row)}</td>
+      <td>${escapeHtml(migrationText(row))}</td>
       <td class="num">${row.living_members}</td>
       <td>${row.last_activity_turn !== null && row.last_activity_turn <= observedTurn
         ? `${escapeHtml(lastActorNames.get(row.last_actor_id) || '—')} / T${row.last_activity_turn}` : '—'}</td>
       <td>${row.member_names.length ? row.member_names.map(escapeHtml).join('・') : '—'}</td>
     </tr>`;
-  }).join('') : '<tr><td colspan="11">世帯台帳の記録なし</td></tr>';
+  }).join('') : '<tr><td colspan="12">世帯台帳の記録なし</td></tr>';
   document.getElementById('resident-count-note').textContent =
     `${visibleResidentCount.toLocaleString()}人記録` +
     (visibleResidentCount > visibleResidents.length
