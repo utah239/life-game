@@ -2,13 +2,14 @@
 """名前付き住民の実接触を、boundedな関係グラフへ保存する純粋ルール。
 
 関係は表示用に捏造せず、同一世帯、同一組織の当月参加、成立済みの世帯間
-物々交換からだけ形成する。最大4096人の名前付き標本だけを扱い、匿名人口を
+物々交換からだけ形成する。既存の強い辺を通った相互扶助は新しい辺を作らず、
+その実在辺を強化する。最大4096人の名前付き標本だけを扱い、匿名人口を
 個体化しない。非親族の次数と世界の辺数に上限を設けるため、処理量・checkpoint
 サイズは世界人口ではなく名前付き標本数に比例する。
 
-関係強度は次月の縮小した物々交換市場で相手探索容量を支える。財そのものを
-生成せず、欲求の二重一致と世帯別交換上限は ``household_exchange`` が引き続き
-正本である。
+関係強度は次月の縮小した物々交換市場で相手探索容量を支え、十分に強い辺だけが
+有限の相互扶助を可能にする。財そのものを生成せず、欲求の二重一致と世帯別交換
+上限は ``household_exchange``、援助の保存則は ``household_mutual_aid`` が正本である。
 """
 from __future__ import annotations
 
@@ -16,7 +17,8 @@ import copy
 import math
 
 
-RESIDENT_RELATIONSHIP_VERSION = 1
+RESIDENT_RELATIONSHIP_VERSION = 2
+LEGACY_RESIDENT_RELATIONSHIP_VERSION = 1
 MAX_RESIDENT_RELATIONSHIPS = 16_384
 MAX_NON_KIN_RELATIONSHIPS_PER_RESIDENT = 8
 RELATIONSHIP_EVENT_SAMPLE_LIMIT = 32
@@ -26,6 +28,7 @@ ORGANIZATION_INITIAL_STRENGTH = 25.0
 BARTER_INITIAL_STRENGTH = 35.0
 ORGANIZATION_STRENGTH_GAIN = 2.0
 BARTER_STRENGTH_GAIN = 6.0
+MUTUAL_AID_STRENGTH_GAIN = 4.0
 PASSIVE_STRENGTH_DECAY = 0.5
 RELATIONSHIP_FADE_THRESHOLD = 5.0
 ROUND_DIGITS = 6
@@ -33,10 +36,12 @@ ROUND_DIGITS = 6
 RELATIONSHIP_KIN = "kin"
 RELATIONSHIP_ORGANIZATION = "organization"
 RELATIONSHIP_BARTER = "barter"
+RELATIONSHIP_MUTUAL_AID = "mutual_aid"
 RELATIONSHIP_KINDS = (
     RELATIONSHIP_KIN,
     RELATIONSHIP_ORGANIZATION,
     RELATIONSHIP_BARTER,
+    RELATIONSHIP_MUTUAL_AID,
 )
 WORKFORCE_ORGANIZATION_KINDS = frozenset((
     "company", "guild", "family_workshop"))
@@ -67,10 +72,13 @@ def upgrade_resident_relationship_state(state: dict | None) -> dict:
     if not isinstance(state, dict):
         raise TypeError("resident relationship state must be a dict")
     version = int(state.get("version", 0))
-    if version != RESIDENT_RELATIONSHIP_VERSION:
+    if version not in (
+            LEGACY_RESIDENT_RELATIONSHIP_VERSION,
+            RESIDENT_RELATIONSHIP_VERSION):
         raise ValueError(
             f"unsupported resident relationship version: {version}")
     after = copy.deepcopy(state)
+    after["version"] = RESIDENT_RELATIONSHIP_VERSION
     after.setdefault("updated_turn", 0)
     after.setdefault("relationships", {})
     after.setdefault("communities", {})
@@ -78,8 +86,26 @@ def upgrade_resident_relationship_state(state: dict | None) -> dict:
     after.setdefault("world_cross_community_relationship_count", 0)
     after.setdefault("world_relationships_formed_total", 0)
     after.setdefault("world_relationships_ended_total", 0)
-    after.setdefault("world_interactions_by_kind", _zero_kind_counts())
+    after["world_interactions_by_kind"] = {
+        kind: max(0, int(after.get(
+            "world_interactions_by_kind", {}).get(kind, 0)))
+        for kind in RELATIONSHIP_KINDS}
     after.setdefault("suppressed_relationship_count", 0)
+    for row in after["relationships"].values():
+        row["kinds"] = [
+            kind for kind in RELATIONSHIP_KINDS
+            if kind in row.get("kinds", ())]
+        row["interaction_counts_by_kind"] = {
+            kind: max(0, int(row.get(
+                "interaction_counts_by_kind", {}).get(kind, 0)))
+            for kind in RELATIONSHIP_KINDS}
+        row["interaction_count"] = sum(
+            row["interaction_counts_by_kind"].values())
+    for row in after["communities"].values():
+        row["relationship_counts_by_kind"] = {
+            kind: max(0, int(row.get(
+                "relationship_counts_by_kind", {}).get(kind, 0)))
+            for kind in RELATIONSHIP_KINDS}
     return after
 
 
@@ -177,6 +203,34 @@ def _barter_observations(observations: dict, living: dict[str, dict],
         _observe(observations, left_id, right_id, RELATIONSHIP_BARTER)
 
 
+def _mutual_aid_observations(
+        observations: dict, living: dict[str, dict], existing: dict[str, dict],
+        mutual_aid_routes: list[dict] | None) -> None:
+    """援助は既存辺だけを月1回強化し、route入力から新しい辺を捏造しない。"""
+    observed_edge_ids = set()
+    for route in mutual_aid_routes or ():
+        edge_id = str(route.get("relationship_id") or "")
+        if not edge_id or edge_id in observed_edge_ids:
+            continue
+        edge = existing.get(edge_id)
+        if edge is None:
+            continue
+        donor_id = str(route.get("donor_resident_id") or "")
+        recipient_id = str(route.get("recipient_resident_id") or "")
+        edge_left_id = str(edge.get("resident_a_id") or "")
+        edge_right_id = str(edge.get("resident_b_id") or "")
+        if (donor_id not in living or recipient_id not in living
+                or donor_id == recipient_id
+                or not edge_left_id or not edge_right_id
+                or _pair(donor_id, recipient_id) != _pair(
+                    edge_left_id, edge_right_id)):
+            continue
+        _observe(
+            observations, donor_id, recipient_id,
+            RELATIONSHIP_MUTUAL_AID)
+        observed_edge_ids.add(edge_id)
+
+
 def _initial_strength(kind_counts: dict[str, int]) -> float:
     strengths = []
     if int(kind_counts.get(RELATIONSHIP_KIN, 0)) > 0:
@@ -193,7 +247,9 @@ def _strength_gain(kind_counts: dict[str, int]) -> float:
         int(kind_counts.get(RELATIONSHIP_ORGANIZATION, 0))
         * ORGANIZATION_STRENGTH_GAIN
         + int(kind_counts.get(RELATIONSHIP_BARTER, 0))
-        * BARTER_STRENGTH_GAIN)
+        * BARTER_STRENGTH_GAIN
+        + int(kind_counts.get(RELATIONSHIP_MUTUAL_AID, 0))
+        * MUTUAL_AID_STRENGTH_GAIN)
 
 
 def _edge_record(pair: tuple[str, str], kind_counts: dict[str, int],
@@ -293,6 +349,11 @@ def verify_resident_relationship_state(state: dict, registry: dict) -> bool:
     relationships = state.get("relationships", {})
     if len(relationships) > MAX_RESIDENT_RELATIONSHIPS:
         return False
+    world_interactions = state.get("world_interactions_by_kind", {})
+    if (set(world_interactions) != set(RELATIONSHIP_KINDS)
+            or any(int(world_interactions[kind]) < 0
+                   for kind in RELATIONSHIP_KINDS)):
+        return False
     non_kin_degree: dict[str, int] = {}
     for edge_id, row in relationships.items():
         left_id = str(row.get("resident_a_id"))
@@ -306,6 +367,14 @@ def verify_resident_relationship_state(state: dict, registry: dict) -> bool:
             return False
         kinds = row.get("kinds", ())
         if not kinds or any(kind not in RELATIONSHIP_KINDS for kind in kinds):
+            return False
+        counts = row.get("interaction_counts_by_kind", {})
+        if (set(counts) != set(RELATIONSHIP_KINDS)
+                or any(int(counts[kind]) < 0 for kind in RELATIONSHIP_KINDS)
+                or int(row.get("interaction_count", -1))
+                != sum(int(counts[kind]) for kind in RELATIONSHIP_KINDS)
+                or any(int(counts[kind]) > 0 and kind not in kinds
+                       for kind in RELATIONSHIP_KINDS)):
             return False
         if RELATIONSHIP_KIN not in kinds:
             non_kin_degree[left_id] = non_kin_degree.get(left_id, 0) + 1
@@ -352,7 +421,7 @@ def household_relationship_support(state: dict | None,
 def plan_resident_relationships(
         state: dict | None, registry: dict,
         organization_state: dict | None, barter_routes: list[dict] | None,
-        turn: int) -> dict:
+        turn: int, *, mutual_aid_routes: list[dict] | None = None) -> dict:
     """当月の実接触を適用し、次月の意思決定に使う関係台帳を返す。"""
     before = upgrade_resident_relationship_state(state)
     if int(before.get("updated_turn", -1)) == int(turn):
@@ -363,6 +432,8 @@ def plan_resident_relationships(
     _kin_observations(observations, living, existing)
     _organization_observations(observations, living, organization_state)
     _barter_observations(observations, living, barter_routes, turn)
+    _mutual_aid_observations(
+        observations, living, existing, mutual_aid_routes)
 
     relationships: dict[str, dict] = {}
     ended = []

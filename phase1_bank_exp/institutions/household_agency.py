@@ -22,6 +22,9 @@ from institutions.household_goods import (
     verify_household_goods_state,
 )
 from institutions.household_exchange import plan_household_barter_exchange
+from institutions.household_mutual_aid import (
+    apply_household_mutual_aid_to_owned_state,
+)
 from institutions.local_credit import (
     LOCAL_CREDIT_STAGE_CONTRACTION,
     LOCAL_CREDIT_STAGE_HEALTHY,
@@ -267,7 +270,8 @@ def plan_household_agency(
         organization_state: dict | None, turn: int, *,
         barter_active: bool = False,
         relationship_support_by_household: (
-            dict[str, float] | None) = None) -> dict:
+            dict[str, float] | None) = None,
+        resident_relationship_state: dict | None = None) -> dict:
     """共用財アクセスを適用し、世帯ごとの次月優先財を計画する。"""
     before = upgrade_household_agency_state(state)
     if verify_household_goods_state(
@@ -295,12 +299,20 @@ def plan_household_agency(
         goods_working = exchange["state"]
         exchange_events = exchange["events"]
         relationship_routes = exchange["relationship_routes"]
+    # goods_workingはこのpipelineが既にcopy/reconcileで所有している。ここで
+    # さらに全世帯台帳をcopyせず、明示的なowned-state入口へ渡す。
+    mutual_aid = apply_household_mutual_aid_to_owned_state(
+        goods_working, household_needs_state, registry,
+        resident_relationship_state, turn)
+    goods_working = mutual_aid["state"]
+    mutual_aid_events = mutual_aid["events"]
+    mutual_aid_routes = mutual_aid["relationship_routes"]
     _refresh_goods_aggregates(goods_working, turn)
     goods_after = goods_working
     if not verify_household_goods_state(
             goods_after, settlements, registry, household_needs_state,
             organization_state):
-        raise RuntimeError("household common access broke goods conservation")
+        raise RuntimeError("household agency broke goods conservation")
     households = {}
     communities = {}
     response_events = []
@@ -441,8 +453,10 @@ def plan_household_agency(
         "household_goods_state": goods_after,
         "events": response_events,
         "household_goods_events": (
-            reconciliation_events + access_events + exchange_events),
+            reconciliation_events + access_events + exchange_events
+            + mutual_aid_events),
         "relationship_routes": relationship_routes,
+        "mutual_aid_routes": mutual_aid_routes,
     }
 
 

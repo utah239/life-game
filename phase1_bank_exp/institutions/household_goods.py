@@ -27,7 +27,8 @@ import copy
 from institutions.barter import goods_capacity
 
 
-HOUSEHOLD_GOODS_VERSION = 1
+HOUSEHOLD_GOODS_VERSION = 2
+LEGACY_HOUSEHOLD_GOODS_VERSION = 1
 HOUSEHOLD_GOODS = ("food", "medicine", "shelter", "tools")
 PORTABLE_HOUSEHOLD_GOODS = ("food", "medicine", "tools")
 SITE_BOUND_HOUSEHOLD_GOODS = ("shelter",)
@@ -57,6 +58,9 @@ def _account_record(account_id: str, settlement_id: str, *,
         "barter_sent_totals": _zero_goods(),
         "barter_received_totals": _zero_goods(),
         "barter_exchange_count": 0,
+        "mutual_aid_given_totals": _zero_goods(),
+        "mutual_aid_received_totals": _zero_goods(),
+        "mutual_aid_transfer_count": 0,
         "consumed_totals": _zero_goods(),
         "inherited_totals": _zero_goods(),
         "migrated_sent_totals": _zero_goods(),
@@ -85,6 +89,9 @@ def initial_household_goods_state(turn: int = 0) -> dict:
         "world_household_barter_volume_by_good": _zero_goods(),
         "world_household_barter_exchange_count": 0,
         "household_barter_applied_turn": None,
+        "world_household_mutual_aid_volume_by_good": _zero_goods(),
+        "world_household_mutual_aid_transfer_count": 0,
+        "household_mutual_aid_applied_turn": None,
     }
 
 
@@ -94,9 +101,11 @@ def upgrade_household_goods_state(state: dict | None) -> dict:
     if not isinstance(state, dict):
         raise TypeError("household goods state must be a dict")
     version = int(state.get("version", 0))
-    if version != HOUSEHOLD_GOODS_VERSION:
+    if version not in (
+            LEGACY_HOUSEHOLD_GOODS_VERSION, HOUSEHOLD_GOODS_VERSION):
         raise ValueError(f"unsupported household goods version: {version}")
     after = copy.deepcopy(state)
+    after["version"] = HOUSEHOLD_GOODS_VERSION
     after.setdefault("updated_turn", 0)
     after.setdefault("households", {})
     after.setdefault("anonymous_pools", {})
@@ -106,23 +115,29 @@ def upgrade_household_goods_state(state: dict | None) -> dict:
         for field in (
                 "holdings", "acquired_totals", "common_access_totals",
                 "barter_sent_totals", "barter_received_totals",
+                "mutual_aid_given_totals", "mutual_aid_received_totals",
                 "consumed_totals",
                 "inherited_totals", "migrated_sent_totals",
                 "migrated_received_totals"):
             row[field] = _goods(row.get(field))
         row["barter_exchange_count"] = max(
             0, int(row.get("barter_exchange_count", 0)))
+        row["mutual_aid_transfer_count"] = max(
+            0, int(row.get("mutual_aid_transfer_count", 0)))
     for settlement_id, row in after["anonymous_pools"].items():
         row["settlement_id"] = str(settlement_id)
         row["population"] = max(0, int(row.get("population", 0)))
         for field in (
                 "holdings", "acquired_totals", "common_access_totals",
                 "barter_sent_totals", "barter_received_totals",
+                "mutual_aid_given_totals", "mutual_aid_received_totals",
                 "consumed_totals",
                 "migrated_sent_totals", "migrated_received_totals"):
             row[field] = _goods(row.get(field))
         row["barter_exchange_count"] = max(
             0, int(row.get("barter_exchange_count", 0)))
+        row["mutual_aid_transfer_count"] = max(
+            0, int(row.get("mutual_aid_transfer_count", 0)))
     for field in (
             "common_pool_by_community", "organization_claims_by_community"):
         after.setdefault(field, {})
@@ -131,12 +146,19 @@ def upgrade_household_goods_state(state: dict | None) -> dict:
     for field in (
             "world_physical_goods", "world_household_holdings",
             "world_anonymous_holdings", "world_organization_claims",
-            "world_common_pool", "world_household_barter_volume_by_good"):
+            "world_common_pool", "world_household_barter_volume_by_good",
+            "world_household_mutual_aid_volume_by_good"):
         after[field] = _goods(after.get(field))
     after["world_household_barter_exchange_count"] = max(
         0, int(after.get("world_household_barter_exchange_count", 0)))
+    after["world_household_mutual_aid_transfer_count"] = max(
+        0, int(after.get(
+            "world_household_mutual_aid_transfer_count", 0)))
     applied_turn = after.get("household_barter_applied_turn")
     after["household_barter_applied_turn"] = (
+        None if applied_turn is None else int(applied_turn))
+    applied_turn = after.get("household_mutual_aid_applied_turn")
+    after["household_mutual_aid_applied_turn"] = (
         None if applied_turn is None else int(applied_turn))
     return after
 

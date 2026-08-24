@@ -397,6 +397,12 @@ def _summary(checkpoint: dict, history_months: int) -> dict:
         "world_household_barter_exchange_count": int(
             household_goods_state.get(
                 "world_household_barter_exchange_count", 0)),
+        "world_household_mutual_aid_volume_by_good": dict(
+            household_goods_state.get(
+                "world_household_mutual_aid_volume_by_good", {})),
+        "world_household_mutual_aid_transfer_count": int(
+            household_goods_state.get(
+                "world_household_mutual_aid_transfer_count", 0)),
         "world_resident_relationship_count": int(
             resident_relationship_state.get(
                 "world_relationship_count", 0)),
