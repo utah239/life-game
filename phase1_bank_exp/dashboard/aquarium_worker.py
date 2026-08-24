@@ -389,6 +389,12 @@ def _summary(checkpoint: dict, history_months: int) -> dict:
             household_goods_state.get("world_common_pool", {})),
         "world_organization_goods_claims": dict(
             household_goods_state.get("world_organization_claims", {})),
+        "world_household_barter_volume_by_good": dict(
+            household_goods_state.get(
+                "world_household_barter_volume_by_good", {})),
+        "world_household_barter_exchange_count": int(
+            household_goods_state.get(
+                "world_household_barter_exchange_count", 0)),
         "production_practice_by_good": focus_practice,
         "production_productivity_factors_by_good": (
             production_productivity_factors(focus_practice)),
