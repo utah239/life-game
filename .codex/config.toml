@@ -1,0 +1,13 @@
+# Keep project sessions concise while preserving the selected model and its reasoning
+# effort. Project-scoped config is loaded only after the repository is trusted.
+model_verbosity = "low"
+model_reasoning_summary = "concise"
+
+# Compact tool-heavy histories before they crowd the model window. Count the full
+# active context so repeated instructions and tool output also trigger compaction.
+model_auto_compact_token_limit = 160000
+model_auto_compact_token_limit_scope = "total"
+
+# Bound the cumulative project-instruction prefix. AGENTS.md intentionally leaves
+# room for a small, task-specific nested file if one is introduced later.
+project_doc_max_bytes = 8192
